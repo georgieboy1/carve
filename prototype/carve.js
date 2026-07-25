@@ -31,6 +31,14 @@ const CONFIG = {
   LONG_PRESS: 480,
   TAP_SLOP: 10,
   TAP_TIME: 400,
+
+  SHARDS: 12,          // pieces a carved block bursts into
+  SHARD_LIFE: 0.85,    // seconds before a shard is gone
+  GRAVITY: 15,
+  TURNTABLE: 0.25,     // rad/sec of idle rotation in Examine mode
+  TURNTABLE_WAIT: 2200, // ms of stillness before it resumes after a drag
+  ZOOM_MIN: 0.45,      // multiples of the fitted distance
+  ZOOM_MAX: 1.8,
 };
 
 /* Levels, their order and their grouping all come from shapes.js now. One
@@ -232,7 +240,17 @@ const view = {
   raycaster: null, pointer: null,
   group: null, meshes: [], meshByKey: new Map(), labels: [],
   cubeMaterials: [], keeperMaterial: null, markMaterial: null,
+  auditMaterial: null,
+
+  fitRadius: 0,        // the distance fitCamera chose; zoom is relative to it
+  examining: false,
+  turntablePause: 0,
 };
+
+/* Shards live in their own pool. Twelve per carve with forty carves a level
+   is a lot of churn, so meshes are reused rather than allocated and thrown
+   away mid-play. */
+const shards = { free: [], live: [], geometry: null, materials: [] };
 
 const ui = {};
 
@@ -430,7 +448,8 @@ function fitCamera() {
     }
   }
 
-  view.spherical.radius = needed * 1.06;
+  view.fitRadius = needed * 1.06;
+  view.spherical.radius = view.fitRadius;
   updateCamera();
 }
 
@@ -454,8 +473,19 @@ function syncSize() {
   view.camera.updateProjectionMatrix();
 }
 
+let lastFrame = performance.now();
+
 function renderFrame() {
+  const now = performance.now();
+  // Clamped: a backgrounded tab hands back a huge delta on its first frame,
+  // which would fling every live shard off into the distance.
+  const dt = Math.min((now - lastFrame) / 1000, 0.05);
+  lastFrame = now;
+
   syncSize();
+  stepShards(dt);
+  if (view.examining) stepExamine(dt, now);
+
   view.renderer.render(view.scene, view.camera);
 }
 
@@ -487,6 +517,12 @@ function buildVoxels() {
     // Cool teal, so a hint can never be mistaken for an amber player mark.
     view.hintMaterial = new THREE.MeshStandardMaterial(
       { color: 0x6fd3c4, emissive: 0x0f5b50, emissiveIntensity: 0.45, roughness: 0.4 });
+
+    // Audit ghost. depthTest off so buried sculpture reads through the stone.
+    view.auditMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff6b8a, emissive: 0xff6b8a, emissiveIntensity: 0.55,
+      transparent: true, opacity: 0.42, depthTest: false, depthWrite: false,
+    });
   }
 
   const size = CONFIG.CUBE - CONFIG.GAP;
@@ -518,6 +554,83 @@ function disposeVoxels() {
     sprite.material.dispose();
   }
   view.labels.length = 0;
+}
+
+/* ---------- SHATTER ----------
+   A carved block bursts into twelve glowing chips of its own colour, thrown
+   outward and pulled down by gravity. They shrink to nothing rather than
+   fading, which keeps every shard on ONE shared material per layer — fading
+   would need a material instance per shard and that is a lot of garbage for
+   an effect that lasts under a second. */
+
+function initShards() {
+  shards.geometry = new THREE.BoxGeometry(0.24, 0.24, 0.24);
+
+  for (const base of view.cubeMaterials) {
+    shards.materials.push(new THREE.MeshStandardMaterial({
+      color: base.color,
+      emissive: base.color,
+      emissiveIntensity: 0.5,
+      roughness: 0.35,
+    }));
+  }
+
+  // Enough for several overlapping bursts; they expire fast so this is ample.
+  for (let i = 0; i < CONFIG.SHARDS * 6; i++) {
+    const mesh = new THREE.Mesh(shards.geometry, shards.materials[0]);
+    mesh.visible = false;
+    view.group.add(mesh);
+    shards.free.push(mesh);
+  }
+}
+
+function burst(cell) {
+  const origin = worldPos(cell);
+  const material = shards.materials[
+    Math.min(cell.y, shards.materials.length - 1)];
+
+  for (let i = 0; i < CONFIG.SHARDS; i++) {
+    const mesh = shards.free.pop();
+    if (!mesh) return;               // pool exhausted: skip, never allocate
+
+    mesh.material = material;
+    mesh.position.copy(origin);
+    mesh.position.x += (Math.random() - 0.5) * 0.35;
+    mesh.position.y += (Math.random() - 0.5) * 0.35;
+    mesh.position.z += (Math.random() - 0.5) * 0.35;
+    mesh.scale.setScalar(1);
+    mesh.rotation.set(Math.random() * 3, Math.random() * 3, 0);
+    mesh.visible = true;
+
+    // Biased upward so the burst reads as a pop, not a puff sideways.
+    const velocity = new THREE.Vector3(
+      Math.random() * 2 - 1,
+      Math.random() * 1.3 + 0.45,
+      Math.random() * 2 - 1,
+    ).normalize().multiplyScalar(1.9 + Math.random() * 1.7);
+
+    shards.live.push({ mesh, velocity, life: 0, spin: (Math.random() - 0.5) * 9 });
+  }
+}
+
+function stepShards(dt) {
+  for (let i = shards.live.length - 1; i >= 0; i--) {
+    const shard = shards.live[i];
+    shard.life += dt;
+
+    if (shard.life >= CONFIG.SHARD_LIFE) {
+      shard.mesh.visible = false;
+      shards.free.push(shard.mesh);
+      shards.live.splice(i, 1);
+      continue;
+    }
+
+    shard.velocity.y -= CONFIG.GRAVITY * dt;
+    shard.mesh.position.addScaledVector(shard.velocity, dt);
+    shard.mesh.rotation.x += shard.spin * dt;
+    shard.mesh.rotation.y += shard.spin * dt * 0.7;
+    shard.mesh.scale.setScalar(1 - shard.life / CONFIG.SHARD_LIFE);
+  }
 }
 
 /* ---------- NUMBER CHIPS ---------- */
@@ -840,6 +953,8 @@ function carve(cellKey) {
     mesh.geometry.dispose();
   }
 
+  burst(cell);
+
   addLabel(cell);
   refreshClues();          // this carve may have satisfied nearby clues
   updateHUD();
@@ -929,7 +1044,79 @@ function finish(result) {
   ui.pick.hidden = won && packDone;
   ui.pick.onclick = toCollection;
 
-  ui.banner.hidden = false;
+  // The card is built now but stays hidden. Examine mode shows the sculpture
+  // first; the X hands over to this.
+  enterExamine();
+}
+
+/* ---------- EXAMINE MODE ----------
+   A finished carve used to be interrupted by a card the moment it ended —
+   the reveal was covered by the thing congratulating you for it. Now the
+   run ends into a turntable: overlays gone, HUD frozen, the sculpture
+   turning slowly, free to spin and zoom. The results card waits behind the
+   X until the player is done looking. */
+
+function enterExamine() {
+  view.examining = true;
+  view.turntablePause = 0;
+
+  ui.banner.hidden = true;
+  ui.examineExit.hidden = false;
+  document.body.classList.add('examining');
+
+  applyAudit(true);
+}
+
+function exitExamine() {
+  view.examining = false;
+  ui.examineExit.hidden = true;
+  document.body.classList.remove('examining');
+
+  applyAudit(false);
+  ui.banner.hidden = false;      // now the results, once they've had a look
+}
+
+function stepExamine(dt, now) {
+  if (now >= view.turntablePause) {
+    view.spherical.theta += CONFIG.TURNTABLE * dt;
+    updateCamera();
+  }
+  if (view.auditMaterial) {
+    view.auditMaterial.opacity = 0.3 + 0.2 * Math.sin(now / 280);
+  }
+}
+
+/* Shows where the sculpture actually was. Only meaningful when stone is
+   still standing — after a clean finish nothing is hidden, so this correctly
+   does nothing. depthTest is off so buried blocks read straight through the
+   stone that is covering them; that's the whole point of an audit. */
+function applyAudit(on) {
+  if (on && state.wasteLeft === 0) return;
+
+  for (const [k, mesh] of view.meshByKey) {
+    const cell = state.byKey.get(k);
+    if (!cell) continue;
+
+    if (on) {
+      if (cell.keeper && !cell.struck) mesh.material = view.auditMaterial;
+      continue;
+    }
+
+    mesh.material = cell.struck ? view.keeperMaterial
+      : cell.marked ? view.markMaterial
+        : view.cubeMaterials[cell.y];
+  }
+}
+
+/* ---------- ZOOM ---------- */
+
+function zoomBy(factor) {
+  if (!view.fitRadius) return;
+  view.spherical.radius = THREE.MathUtils.clamp(
+    view.spherical.radius * factor,
+    view.fitRadius * CONFIG.ZOOM_MIN,
+    view.fitRadius * CONFIG.ZOOM_MAX);
+  updateCamera();
 }
 
 /* ---------- HINTS ----------
@@ -1007,8 +1194,32 @@ function initInput() {
   let pressTimer = null, longFired = false;
   const cancelHold = () => { clearTimeout(pressTimer); pressTimer = null; };
 
+  // Two-finger pinch needs every live pointer, not just the primary one.
+  const touches = new Map();
+  let pinchStart = 0;
+
+  const holdTurntable = () => {
+    view.turntablePause = performance.now() + CONFIG.TURNTABLE_WAIT;
+  };
+
+  const pinchGap = () => {
+    const [a, b] = [...touches.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
   el.addEventListener('pointerdown', (e) => {
     ui.hint.classList.add('gone');
+    holdTurntable();
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (touches.size === 2) {
+      // Second finger down: this is a pinch, so abandon the tap/hold gesture.
+      pinchStart = pinchGap();
+      dragging = false;
+      cancelHold();
+      return;
+    }
+
     dragging = true; moved = 0; longFired = false;
     startTime = performance.now();
     lastX = e.clientX; lastY = e.clientY;
@@ -1023,6 +1234,18 @@ function initInput() {
   });
 
   el.addEventListener('pointermove', (e) => {
+    if (touches.has(e.pointerId)) {
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (touches.size === 2) {
+      const gap = pinchGap();
+      if (pinchStart > 0 && gap > 0) zoomBy(pinchStart / gap);
+      pinchStart = gap;
+      holdTurntable();
+      return;
+    }
+
     if (!dragging) return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
@@ -1032,10 +1255,18 @@ function initInput() {
     view.spherical.theta -= dx * 0.007;
     view.spherical.phi -= dy * 0.007;
     updateCamera();
+    holdTurntable();
   });
+
+  const release = (e) => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pinchStart = 0;
+    holdTurntable();
+  };
 
   el.addEventListener('pointerup', (e) => {
     cancelHold();
+    release(e);
     if (!dragging || longFired) return;
     dragging = false;
     if (moved < CONFIG.TAP_SLOP && performance.now() - startTime < CONFIG.TAP_TIME) {
@@ -1044,7 +1275,15 @@ function initInput() {
     }
   });
 
-  el.addEventListener('pointercancel', () => { cancelHold(); dragging = false; });
+  el.addEventListener('pointercancel', (e) => {
+    cancelHold(); release(e); dragging = false;
+  });
+
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomBy(1 + e.deltaY * 0.0012);
+    holdTurntable();
+  }, { passive: false });
 }
 
 /* ---------- HUD ---------- */
@@ -1240,6 +1479,9 @@ ui.glyphBtn.addEventListener('click', cycleGlyphs);
 ui.modeBtn.addEventListener('click', toggleMode);
 ui.hintBtn.addEventListener('click', useHint);
 
+ui.examineExit = document.getElementById('examine-exit');
+ui.examineExit.addEventListener('click', exitExamine);
+
 ui.zenSheet = document.getElementById('zen-sheet');
 document.getElementById('zen-buy').addEventListener('click', unlockZen);
 document.getElementById('zen-close')
@@ -1274,7 +1516,11 @@ validateLevel();
 initScene();
 buildVoxels();
 initInput();
+initShards();
 initAds();
+// Establish a fitted distance immediately; zoom is measured relative to
+// it, and syncSize() only reaches fitCamera() once a frame has drawn.
+fitCamera();
 updateHUD();
 
 window.Carve = {
@@ -1283,6 +1529,7 @@ window.Carve = {
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
   cycleGlyphs, toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
+  burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,
   save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
