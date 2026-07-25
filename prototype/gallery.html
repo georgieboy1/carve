@@ -5,16 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#fdf3f8">
   <title>Carve — collection — KG Studio</title>
-  <link rel="stylesheet" href="carve.css">
   <style>
-    body { display: block; overflow-y: auto; height: auto; min-height: 100dvh; padding-bottom: 40px; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --ink: #4a3b49;
+      --ink-soft: #9c8a97;
+      --mint: #7fb2a6;
+      --rose: #ff6b8a;
+    }
+
+    body {
+      min-height: 100dvh;
+      background:
+        radial-gradient(110% 40% at 50% 4%, #fffdfe 0%, #fdf3f8 45%, transparent 100%),
+        linear-gradient(180deg, #fdf3f8 0%, #f6e9f3 70%, #eddfec 100%);
+      background-attachment: fixed;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      padding: 16px 14px calc(30px + env(safe-area-inset-bottom));
+    }
 
     #top {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
       gap: 12px;
-      padding: 16px 18px 4px;
+      margin-bottom: 2px;
     }
 
     #top h1 { font-size: 19px; font-weight: 800; letter-spacing: -.01em; }
@@ -29,27 +47,23 @@
     }
 
     #back {
-      display: block;
-      margin: 6px 18px 10px;
-      font-size: 12px;
+      display: inline-block;
+      margin-bottom: 14px;
+      font-size: 12.5px;
       font-weight: 600;
       color: var(--mint);
       text-decoration: none;
     }
 
-    #wrap { position: relative; margin: 0 12px; }
-    canvas { display: block; width: 100%; }
-
-    #overlay { position: absolute; inset: 0; }
+    .pack { margin-bottom: 18px; }
 
     .pack-head {
-      position: absolute;
-      left: 6px;
-      right: 6px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
+      margin-bottom: 2px;
+      padding: 0 2px;
     }
 
     .pack-head b {
@@ -60,17 +74,17 @@
       color: #a1889c;
     }
 
-    .pack-head .lock {
-      font-size: 10px;
+    .tally {
+      font-size: 10.5px;
       font-weight: 700;
-      letter-spacing: .04em;
       color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
     }
 
-    .pack-head button {
+    .unlock {
       border: 0;
       border-radius: 99px;
-      padding: 5px 11px;
+      padding: 6px 13px;
       background: var(--mint);
       color: #fff;
       font: inherit;
@@ -79,40 +93,67 @@
       cursor: pointer;
     }
 
+    .unlock:active { transform: scale(.95); }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+      gap: 0 2px;
+    }
+
     .tile {
-      position: absolute;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: flex-end;
-      pointer-events: none;
+      border: 0;
+      background: none;
+      font: inherit;
+      color: inherit;
       text-align: center;
+      padding: 0 0 8px;
+      border-radius: 14px;
     }
 
-    .tile.playable {
-      cursor: pointer;
-      border-radius: 16px;
-      transition: background .18s ease, transform .12s ease;
+    .tile img { display: block; width: 100%; height: auto; }
+
+    .tile figcaption { margin-top: -10px; }
+
+    .tile b { display: block; font-size: 11.5px; font-weight: 700; }
+    .tile b.dim { color: #c2b0bd; }
+
+    .tile .todo {
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #c2b0bd;
     }
 
-    .tile.playable:hover { background: rgba(255,255,255,.5); }
-    .tile.playable:active { transform: scale(.96); }
-    .tile.playable:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
-
-    .tile b { font-size: 11.5px; font-weight: 700; }
     .tile .score { font-size: 12px; letter-spacing: 1px; }
-    .tile .score .star { color: #e8dce3; }
-    .tile .score .star.full { color: #f0b73f; }
-    .tile .score .star.half {
+    .star { color: #e8dce3; }
+    .star.full { color: #f0b73f; }
+    .star.half {
       background: linear-gradient(90deg, #f0b73f 50%, #e8dce3 50%);
       -webkit-background-clip: text; background-clip: text; color: transparent;
     }
-    .tile .zen {
+
+    .zen {
       font-style: normal; font-size: 9.5px; font-weight: 800;
       letter-spacing: .09em; text-transform: uppercase; color: #4f8d7d;
     }
-    .tile .todo { font-size: 9.5px; font-weight: 600; letter-spacing: .08em;
-                  text-transform: uppercase; color: #c2b0bd; }
+
+    .playable { cursor: pointer; transition: background .18s ease, transform .12s ease; }
+    .playable:hover { background: rgba(255,255,255,.5); }
+    .playable:active { transform: scale(.96); }
+    .playable:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
+
+    footer {
+      margin-top: 18px;
+      font-size: 10px;
+      letter-spacing: .3em;
+      text-indent: .3em;
+      text-align: center;
+      color: #bda9b8;
+    }
+
+    footer b { font-weight: 800; color: #a1889c; }
   </style>
 </head>
 <body>
@@ -122,12 +163,9 @@
   </div>
   <a id="back" href="./">&larr; Back to carving</a>
 
-  <div id="wrap">
-    <canvas id="view"></canvas>
-    <div id="overlay"></div>
-  </div>
+  <div id="shelf"></div>
 
-  <footer id="brand" style="grid-row:auto;margin-top:18px"><b>KG</b> STUDIO</footer>
+  <footer><b>KG</b> STUDIO</footer>
 
   <script type="importmap">
   {
@@ -137,6 +175,6 @@
     }
   }
   </script>
-  <script type="module" src="gallery.js"></script>
+  <script type="module" src="gallery.js?v=2"></script>
 </body>
 </html>
