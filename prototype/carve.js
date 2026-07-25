@@ -24,7 +24,7 @@ const CONFIG = {
   MAX_Y: 0,          // derived from the level list below, not hand-maintained
   CUBE: 1,
   GAP: 0.07,
-  START_HEARTS: 3,
+  STARS: 3,          // the only gauge: score AND lives, see starsFor()
   HINTS: 3,          // once spent, this is the natural second ad slot
   MAX_REVIVES: 1,    // per level; unlimited would remove the fail state
   AD_SECONDS: 3,
@@ -66,7 +66,7 @@ const SAVE_VERSION = 1;
 const blankSave = () => ({
   version: SAVE_VERSION,
   level: 0,
-  best: {},              // level name -> { hearts, hints, at }
+  best: {},              // level name -> { stars, slips, hints, mode, at }
   owned: PACKS.filter((p) => p.free).map((p) => p.id),
   clueMode: 'chips',
   glyphs: 'numbers',     // numbers | letters | shapes
@@ -110,17 +110,28 @@ function writeSave() {
 }
 
 /* ---------- SCORING ----------
-   Three stars, minus one per error, minus a half per hint.
+   ONE gauge. Hearts and stars used to run side by side, but they were
+   driven by the same thing — a slip took a heart AND a star — so the HUD
+   showed the same fact twice and the player felt punished twice for one
+   mistake. The stars ARE the lives now.
 
-   The ceiling falls out of the hearts: a run that survives can hold at most
-   two errors, so errors alone give 3 / 2 / 1 and hints fill in the halves.
-   A revived run has already spent three errors and scores zero — which is
-   the property worth protecting. An ad can buy you the reveal. It can never
-   buy you the stars. */
+   A star has two halves and they mean different things:
+     a slip takes a WHOLE star  — and whole stars are your life
+     a hint takes a HALF        — score only, never the last half
+
+   So hints cost you score and cost you nothing else: they can never be the
+   thing that ends a run. Only slips can. And the invariant the player can
+   actually read off the screen holds — alive means some star is left, zero
+   stars means the stone cracked. */
 const isZen = () => state.mode === 'zen';
 
-function starsFor(errors, hints) {
-  return Math.max(0, Math.min(3, 3 - errors - hints * 0.5));
+function starsFor(slips, hints) {
+  const left = Math.max(0, CONFIG.STARS - slips);
+  if (left === 0) return 0;
+
+  // Hints eat into the remainder but stop short of taking the last half,
+  // so "no stars" never shows on a run that is still alive.
+  return left - Math.min(hints * 0.5, left - 0.5);
 }
 
 const currentStars = () =>
@@ -139,10 +150,10 @@ function starMarkup(stars) {
    whole point of the game and withholding it would be mean. It records zero
    stars, so the shelf keeps an honest record and there's a reason to come
    back. It must never overwrite a scored result. */
-function recordWin(name, stars, errors, hints, mode) {
+function recordWin(name, stars, slips, hints, mode) {
   const prev = save.best[name];
   if (!prev || stars > (prev.stars ?? -1)) {
-    save.best[name] = { stars, errors, hints, mode, at: Date.now() };
+    save.best[name] = { stars, slips, hints, mode, at: Date.now() };
     writeSave();
   }
 }
@@ -183,7 +194,6 @@ const DIGIT_COLORS = ['#b0a3ad', '#4faa96', '#4295c9', '#7377cf',
 
 const state = {
   cells: [], byKey: new Map(),
-  hearts: CONFIG.START_HEARTS,
   wasteTotal: 0, wasteLeft: 0,
   status: 'playing',
   clueMode: save.clueMode,
@@ -251,7 +261,6 @@ function buildLevel() {
 
   state.wasteTotal = state.cells.filter((c) => !c.keeper).length;
   state.wasteLeft = state.wasteTotal;
-  state.hearts = CONFIG.START_HEARTS;
   state.status = 'playing';
   state.revivesUsed = 0;
   state.errors = 0;
@@ -716,10 +725,7 @@ function toggleMode() {
   save.mode = state.mode;
   writeSave();
 
-  if (isZen()) {
-    state.unscored = true;
-    state.hearts = CONFIG.START_HEARTS;   // nothing to fail out of in Zen
-  }
+  if (isZen()) state.unscored = true;
 
   updateHUD();
   toast(isZen()
@@ -768,10 +774,9 @@ function carve(cellKey) {
     // Zen keeps the information — you still learn this cube is sculpture —
     // and drops the punishment. There is no way to fail a Zen carve.
     if (!isZen()) {
-      state.hearts = Math.max(0, state.hearts - 1);
       refreshClues();
       updateHUD();
-      if (state.hearts === 0) finish('lost');
+      if (state.errors >= CONFIG.STARS) finish('lost');
       return;
     }
 
@@ -834,14 +839,17 @@ function finish(result) {
 
   const stars = currentStars();
   if (won) {
+    // The mode actually finished in, NOT derived from `unscored` — a revived
+    // scored run is unscored too, and badging that as Zen on the shelf would
+    // be a plain lie about how it was played.
     recordWin(SHAPE.name, stars, state.errors, state.hintsUsed,
-      state.unscored ? 'zen' : 'scored');
+      isZen() ? 'zen' : 'scored');
   }
 
   ui.bannerEmoji.textContent = won ? (setDone ? '🏛️' : '✨') : '💔';
   ui.bannerTitle.textContent = won
     ? (setDone ? `${pack.name} complete` : `${SHAPE.name} revealed`)
-    : 'Out of hearts';
+    : 'The stone cracked';
   if (won) {
     const tally = [];
     if (state.errors) tally.push(`${state.errors} slip${state.errors > 1 ? 's' : ''}`);
@@ -1001,19 +1009,11 @@ function updateHUD() {
   ui.left.textContent = state.wasteLeft;
   ui.fill.style.width = `${(state.wasteLeft / state.wasteTotal) * 100}%`;
 
-  // Zen has no fail state, so hearts would be a lie. It shows the stakes
-  // it actually has: none.
-  if (isZen()) {
-    ui.hearts.innerHTML = '<span class="zen-tag">Zen</span>';
-  } else {
-    let markup = '';
-    for (let i = 0; i < CONFIG.START_HEARTS; i++) {
-      markup += `<span class="heart${i < state.hearts ? '' : ' spent'}">&hearts;</span>`;
-    }
-    ui.hearts.innerHTML = markup;
-  }
-
-  ui.stars.innerHTML = state.unscored ? '' : starMarkup(currentStars());
+  // Zen has nothing to lose, so it says so rather than showing a gauge
+  // that cannot move.
+  ui.stars.innerHTML = isZen() || state.unscored
+    ? '<span class="zen-tag">' + (isZen() ? 'Zen' : 'Unscored') + '</span>'
+    : starMarkup(currentStars());
   ui.modeBtn.textContent = isZen() ? 'Mode · Zen' : 'Mode · Scored';
 
   // Spelled out rather than iconographic on purpose: an icon that means
@@ -1157,7 +1157,8 @@ function watchAd() {
    progress would make the ad feel like a punishment. */
 function grantRevive() {
   state.revivesUsed++;
-  state.hearts++;
+  state.errors = Math.max(0, state.errors - 1);   // one slip's worth of margin back
+  state.unscored = true;                          // ads buy the reveal, never the stars
   state.status = 'playing';
   ui.banner.hidden = true;
   updateHUD();
@@ -1165,7 +1166,6 @@ function grantRevive() {
 
 /* ---------- BOOTSTRAP ---------- */
 
-ui.hearts = document.getElementById('hearts');
 ui.left = document.getElementById('left');
 ui.fill = document.getElementById('progress-fill');
 ui.hint = document.getElementById('hint');
