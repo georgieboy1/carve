@@ -1,0 +1,33 @@
+{
+  "name": "Jenga Sweeper",
+  "short_name": "Jenga Sweeper",
+  "description": "A cute 3D Jenga-Minesweeper puzzle. Pull the safe blocks, leave the mines standing.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fdf3f8",
+  "theme_color": "#fdf3f8",
+  "categories": ["games", "puzzle"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

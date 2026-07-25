@@ -1,0 +1,74 @@
+# Jenga Sweeper
+
+A cute 3D Jenga-Minesweeper puzzle for mobile. Pull the safe blocks, leave
+the mines standing. Built by **KG Studio**.
+
+12 layers × 3 blocks, alternating orientation, 10 hidden mines. Each block
+knows how many of its neighbours are mines — clear one and the number
+appears in the gap it leaves behind.
+
+## Run it locally
+
+Three.js is ESM-only, and browsers block ES modules over `file://`, so it
+needs to be served. Any static server works:
+
+```bash
+python3 -m http.server 5173 --directory .
+```
+
+Then open <http://localhost:5173>.
+
+## Layout
+
+| File | Role |
+|---|---|
+| `index.html` | Portrait shell, import map, HUD and modal markup |
+| `style.css` | Mobile-first layout, HUD, modal, background gradient |
+| `game.js` | All gameplay, rendering, UI and ad logic |
+| `sw.js` | Service worker — offline app shell + cached three.js |
+| `manifest.webmanifest` | PWA metadata |
+| `blueprint.md` | Build log, design decisions, gotchas |
+
+## Tuning
+
+Everything worth adjusting lives in `CONFIG` at the top of `game.js`:
+
+| Key | Default | Notes |
+|---|---|---|
+| `MINE_COUNT` | `10` | Out of 36 blocks. See the density note in `blueprint.md` |
+| `START_HEARTS` | `3` | |
+| `MAX_REVIVES` | `1` | Ad-revives per game. `0` disables the reward loop |
+| `AD_SECONDS` | `3` | Simulated ad length |
+
+The tower's colours are the six hex stops in `LAYER_STOPS` — swap those to
+re-theme the whole thing.
+
+## Enabling ads
+
+Ads are **off by default**: while `ADS.publisherId` is empty, no ad script
+is loaded and no third-party request is made. The reward button runs a
+local simulation instead, so the game is fully playable without a network.
+
+To go live, set your publisher ID in `game.js`:
+
+```js
+const ADS = {
+  publisherId: 'ca-pub-XXXXXXXXXXXXXXXX',
+  testMode: true,   // set false once AdSense has approved the site
+  ...
+};
+```
+
+This uses Google's **H5 Games Ads** (the AdSense Ad Placement API) rather
+than plain AdSense display units, because it's the product that supports
+*rewarded* ads — a display unit has no reward callback to hang a revive on.
+
+Before shipping real ads you'll also need an AdSense account with this site
+approved, a privacy policy, and a consent flow for EU/UK traffic. None of
+that is in the repo yet.
+
+## Deploying
+
+The app is fully static — any host works. For GitHub Pages, push to a
+public repo and enable Pages on the default branch. All paths are relative,
+so serving from `/<repo>/` works without changes.

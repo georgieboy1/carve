@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fdf3f8">
+  <meta name="description" content="A cute 3D Jenga-Minesweeper puzzle. Pull the safe blocks, leave the mines standing.">
+  <title>Jenga Sweeper — KG Studio</title>
+
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Jenga Sweeper">
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="hud">
+    <div id="hearts" role="status" aria-label="Lives remaining"></div>
+
+    <div id="progress">
+      <div id="progress-label">
+        <span>Safe blocks remaining</span>
+        <span id="safe-count" aria-live="polite">–</span>
+      </div>
+      <div id="progress-track">
+        <div id="progress-fill"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Portrait play area. Part 2 mounts the Three.js canvas here. -->
+  <main id="stage"></main>
+
+  <footer id="brand"><b>KG</b> STUDIO</footer>
+
+  <div id="modal-scrim" hidden>
+    <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div id="modal-emoji">💔</div>
+      <h2 id="modal-title">Out of hearts</h2>
+      <p id="modal-body"></p>
+
+      <button id="btn-ad" class="btn btn-primary" type="button"></button>
+      <button id="btn-restart" class="btn btn-ghost" type="button">Start over</button>
+
+      <label class="switch">
+        <input type="checkbox" id="hard-mode">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">
+          Hard mode
+          <small>Play with no numbers</small>
+        </span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Three.js ships ESM-only. The import map lets game.js say `from 'three'`
+       and keeps the addons path ready for Part 4's RoundedBoxGeometry. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module" src="game.js"></script>
+</body>
+</html>
