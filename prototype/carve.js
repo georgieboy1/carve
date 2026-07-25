@@ -40,6 +40,14 @@ const packOf = (i) => PACKS.find((p) => p.id === LEVELS[i].pack);
 const packStart = (i) => LEVELS.findIndex((l) => l.pack === LEVELS[i].pack);
 const stepIn = (i) => i - packStart(i);
 
+/* Navigation is scoped to the pack the player is in. Walking off the end of
+   a pack used to roll straight into the next one — which quietly marched a
+   free player into paid content — and a failed level dropped them wherever
+   the counter happened to land. A pack is four levels and a closed set:
+   finish or fail one and you go back to choosing among its four. */
+const ownsPack = (pack) => pack.free || save.owned.includes(pack.id);
+const canPlay = (i) => ownsPack(packOf(i));
+
 /* Derived, so adding a taller level can't silently leave its top row with
    no material. Hand-maintaining this number cost the Keep a white roof. */
 CONFIG.MAX_Y = Math.max(...LEVELS.map((s) => parse(s).grid.y));
@@ -59,7 +67,9 @@ const blankSave = () => ({
   version: SAVE_VERSION,
   level: 0,
   best: {},              // level name -> { hearts, hints, at }
+  owned: PACKS.filter((p) => p.free).map((p) => p.id),
   clueMode: 'chips',
+  glyphs: 'numbers',     // numbers | letters | shapes
 });
 
 function readSave() {
@@ -146,6 +156,7 @@ const state = {
   wasteTotal: 0, wasteLeft: 0,
   status: 'playing',
   clueMode: save.clueMode,
+  glyphs: save.glyphs || 'numbers',
   hintsLeft: CONFIG.HINTS,
   revivesUsed: 0,
 };
@@ -464,9 +475,94 @@ function texture(cacheKey, draw) {
 const font = (size, weight = 800) =>
   `${weight} ${size}px -apple-system, "Segoe UI", system-ui, sans-serif`;
 
+/* ---------- GLYPH SETS ----------
+   The clue is always "how many of my six neighbours are sculpture", 0-6.
+   How that count is DRAWN is a separate choice:
+
+     numbers  the default
+     letters  A-G, for players who read letters more comfortably than digits
+     shapes   seven distinct silhouettes, which stay tellable apart without
+              relying on reading or on colour at all
+
+   Shapes are drawn rather than typed. Font glyphs for circles and stars are
+   wildly inconsistent across platforms, and half of them are emoji on some
+   devices — the one place we cannot afford a surprise. */
+
+const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+
+function drawGlyphShape(ctx, size, n, colour) {
+  const cx = size / 2;
+  const cy = size * 0.52;
+  const r = size * 0.21;
+
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = size * 0.075;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+
+  switch (n) {
+    case 0:                                        // ring
+      ctx.arc(cx, cy, r * 0.82, 0, Math.PI * 2);
+      ctx.stroke();
+      return;
+    case 1:                                        // dot
+      ctx.arc(cx, cy, r * 0.62, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    case 2:                                        // triangle
+      polygon(ctx, cx, cy, r, 3, -Math.PI / 2);
+      ctx.fill();
+      return;
+    case 3:                                        // square
+      ctx.rect(cx - r * 0.78, cy - r * 0.78, r * 1.56, r * 1.56);
+      ctx.fill();
+      return;
+    case 4:                                        // diamond
+      polygon(ctx, cx, cy, r, 4, 0);
+      ctx.fill();
+      return;
+    case 5:                                        // pentagon
+      polygon(ctx, cx, cy, r, 5, -Math.PI / 2);
+      ctx.fill();
+      return;
+    default:                                       // six-point star
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      }
+      ctx.stroke();
+  }
+}
+
+function polygon(ctx, cx, cy, r, sides, rotation) {
+  for (let i = 0; i < sides; i++) {
+    const a = rotation + (i / sides) * Math.PI * 2;
+    const px = cx + Math.cos(a) * r;
+    const py = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
 /* CHIP: small, opaque, high contrast. Easiest to read one at a time. */
+/* Every texture is cached per glyph set, so switching sets mid-level is
+   instant and never redraws a canvas twice. */
+function paintGlyph(ctx, size, n, colour) {
+  if (state.glyphs === 'shapes') return drawGlyphShape(ctx, size, n, colour);
+
+  const text = state.glyphs === 'letters' ? LETTERS[n] : String(n);
+  ctx.fillStyle = colour;
+  ctx.font = font(size * 0.46);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, size / 2, size * 0.53);
+}
+
 function digitTexture(n) {
-  return texture(`chip${n}`, (ctx, size) => {
+  return texture(`chip${state.glyphs}${n}`, (ctx, size) => {
     const pad = size * 0.1;
     ctx.shadowColor = 'rgba(74,59,73,0.32)';
     ctx.shadowBlur = size * 0.08;
@@ -481,11 +577,7 @@ function digitTexture(n) {
     ctx.strokeStyle = DIGIT_COLORS[n];
     ctx.stroke();
 
-    ctx.fillStyle = DIGIT_COLORS[n];
-    ctx.font = font(size * 0.46);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(n, size / 2, size * 0.53);
+    paintGlyph(ctx, size, n, DIGIT_COLORS[n]);
   });
 }
 
@@ -493,16 +585,34 @@ function digitTexture(n) {
    cube left behind rather than a sticker floating in front of it. Thirty
    of these sit far quieter than thirty chips. */
 function ghostTexture(n) {
-  return texture(`ghost${n}`, (ctx, size) => {
+  return texture(`ghost${state.glyphs}${n}`, (ctx, size) => {
+    if (state.glyphs === 'shapes') {
+      // White underlay first so the silhouette survives on any pastel.
+      ctx.save();
+      ctx.translate(size / 2, size * 0.52);
+      ctx.scale(1.34, 1.34);
+      ctx.translate(-size / 2, -size * 0.52);
+      drawGlyphShape(ctx, size, n, 'rgba(255,255,255,0.92)');
+      ctx.restore();
+      ctx.save();
+      ctx.translate(size / 2, size * 0.52);
+      ctx.scale(1.3, 1.3);
+      ctx.translate(-size / 2, -size * 0.52);
+      drawGlyphShape(ctx, size, n, DIGIT_COLORS[n]);
+      ctx.restore();
+      return;
+    }
+
+    const text = state.glyphs === 'letters' ? LETTERS[n] : String(n);
     ctx.font = font(size * 0.82);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = size * 0.085;
     ctx.strokeStyle = 'rgba(255,255,255,0.92)';
     ctx.lineJoin = 'round';
-    ctx.strokeText(n, size / 2, size * 0.54);
+    ctx.strokeText(text, size / 2, size * 0.54);
     ctx.fillStyle = DIGIT_COLORS[n];
-    ctx.fillText(n, size / 2, size * 0.54);
+    ctx.fillText(text, size / 2, size * 0.54);
   });
 }
 
@@ -557,6 +667,18 @@ function styleLabel(sprite) {
 
 function refreshClues() {
   view.labels.forEach(styleLabel);
+}
+
+function cycleGlyphs() {
+  const order = ['numbers', 'letters', 'shapes'];
+  state.glyphs = order[(order.indexOf(state.glyphs) + 1) % order.length];
+  save.glyphs = state.glyphs;
+  writeSave();
+
+  // Existing sprites point at the old set's textures; re-point them.
+  refreshClues();
+  updateHUD();
+  toast(`Clues shown as ${state.glyphs}`);
 }
 
 function cycleClueMode() {
@@ -655,10 +777,19 @@ function finish(result) {
   ui.adBtn.hidden = !canRevive;
   if (canRevive) { resetAdButton(); prepareRewardedAd(); }
 
+  // A pack is finished when all four of its sculptures are on the shelf.
+  const packDone = pack.shapes.every((n) => save.best[n]);
+
   ui.again.textContent = won
-    ? (levelIndex === LEVELS.length - 1 ? 'Start over' : 'Next level')
+    ? (packDone ? 'See the collection' : 'Next in pack')
     : 'Try again';
-  ui.again.onclick = won ? nextLevel : retryLevel;
+  ui.again.onclick = won
+    ? (packDone ? toCollection : nextInPack)
+    : retryLevel;
+
+  // Always a way back to the four, whichever way the level ended.
+  ui.pick.hidden = won && packDone;
+  ui.pick.onclick = toCollection;
 
   ui.banner.hidden = false;
 }
@@ -803,6 +934,7 @@ function updateHUD() {
 
   ui.clueBtn.textContent = `Clues · ${state.clueMode}`;
   ui.clueBtn.dataset.mode = state.clueMode;
+  ui.glyphBtn.textContent = `Shown as · ${state.glyphs}`;
   ui.hintBtn.textContent = `Hint · ${state.hintsLeft}`;
   ui.hintBtn.disabled = state.hintsLeft <= 0;
 }
@@ -817,7 +949,13 @@ function toast(message) {
 }
 
 function loadLevel(index) {
-  levelIndex = THREE.MathUtils.clamp(index, 0, LEVELS.length - 1);
+  let wanted = THREE.MathUtils.clamp(index, 0, LEVELS.length - 1);
+
+  // Never open a level from a pack the player doesn't own, however they
+  // got here — a stale save, a shared link, a hand-typed URL.
+  if (!canPlay(wanted)) wanted = 0;
+
+  levelIndex = wanted;
   SHAPE = LEVELS[levelIndex];
   save.level = levelIndex;
   writeSave();
@@ -834,12 +972,20 @@ function loadLevel(index) {
   updateHUD();
 }
 
-const nextLevel = () => loadLevel((levelIndex + 1) % LEVELS.length);
-const retryLevel = () => loadLevel(levelIndex);
+/* Next level WITHIN the pack. At the end of a pack there is no next — the
+   player goes to the collection and picks, which is also where the next
+   pack is offered for sale. */
+function nextInPack() {
+  const start = packStart(levelIndex);
+  const size = packOf(levelIndex).shapes.length;
+  const next = start + ((stepIn(levelIndex) + 1) % size);
+  loadLevel(next);
+}
 
-/* Kept as an alias: the prototype's dev console and the banner button both
-   still say "restart". */
-const restart = nextLevel;
+const retryLevel = () => loadLevel(levelIndex);
+const toCollection = () => { location.href = 'gallery.html'; };
+
+
 
 /* ---------- MONETIZATION ----------
    Lifted wholesale from the Jenga build, which already had this shaped
@@ -936,12 +1082,25 @@ ui.toast = document.getElementById('toast');
 ui.levelName = document.getElementById('level-name');
 ui.pips = document.getElementById('pips');
 ui.again = document.getElementById('again');
+ui.pick = document.getElementById('pick');
 ui.adBtn = document.getElementById('ad-btn');
+ui.glyphBtn = document.getElementById('glyph-btn');
 
-ui.again.addEventListener('click', nextLevel);
 ui.adBtn.addEventListener('click', watchAd);
 ui.clueBtn.addEventListener('click', cycleClueMode);
+ui.glyphBtn.addEventListener('click', cycleGlyphs);
 ui.hintBtn.addEventListener('click', useHint);
+
+/* The collection is the level select, so it hands the chosen level back
+   through the URL. loadLevel() re-checks ownership before honouring it. */
+const requested = Number(new URLSearchParams(location.search).get('level'));
+if (Number.isFinite(requested) && requested >= 0 && requested < LEVELS.length) {
+  levelIndex = requested;
+}
+
+// Whatever the save or the URL asked for, a locked pack is not playable.
+if (!canPlay(levelIndex)) levelIndex = 0;
+SHAPE = LEVELS[levelIndex];
 
 buildLevel();
 validateLevel();
@@ -953,9 +1112,10 @@ updateHUD();
 
 window.Carve = {
   CONFIG, LEVELS, PACKS, state, view,
-  carve, toggleMark, pick, restart, validateLevel,
+  carve, toggleMark, pick, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
-  loadLevel, nextLevel, retryLevel, watchAd, grantRevive, ADS,
+  loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
+  cycleGlyphs, ownsPack, canPlay, packOf,
   save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
   get levelIndex() { return levelIndex; },

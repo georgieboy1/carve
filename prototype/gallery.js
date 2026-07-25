@@ -126,6 +126,8 @@ PACKS.forEach((pack, row) => {
       name, pack, row, col, group, done,
       best: save.best[name],
       radius: 0.5 * Math.hypot(grid.x, grid.y, grid.z),
+      // Index into the game's play order, so a tile can hand it straight back.
+      levelIndex: PACKS.slice(0, row).reduce((n, p) => n + p.shapes.length, 0) + col,
     });
   });
 });
@@ -180,6 +182,24 @@ function buildOverlay(cellW, cellH) {
       ? `<b>${tile.name}</b><span class="hearts">${'&hearts;'.repeat(tile.best.hearts || 0)}</span>`
       : `<b style="color:#c2b0bd">${locked ? '&#8226; &#8226; &#8226;' : tile.name}</b>
          <span class="todo">${locked ? 'locked' : 'not carved'}</span>`;
+
+    /* This screen IS the level select. Anything in an owned pack is
+       playable — carved or not — so a player picks from the four rather
+       than being handed whichever level the counter landed on. */
+    if (!locked) {
+      el.classList.add('playable');
+      el.style.pointerEvents = 'auto';
+      el.setAttribute('role', 'link');
+      el.setAttribute('tabindex', '0');
+      el.setAttribute('aria-label',
+        `${tile.name}, ${tile.done ? 'carved' : 'not carved'} — play`);
+
+      const open = () => { location.href = `./?level=${tile.levelIndex}`; };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    }
 
     overlay.appendChild(el);
   });
