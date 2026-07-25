@@ -3,7 +3,7 @@
    Every path here is RELATIVE. GitHub Pages serves the app from
    /<repo>/, so an absolute '/index.html' would 404 in production. */
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL_CACHE = `jenga-shell-${VERSION}`;
 const RUNTIME_CACHE = `jenga-runtime-${VERSION}`;
 
@@ -67,19 +67,27 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith(cacheFirst(request));
+  event.respondWith(networkFirst(request));
 });
 
-async function cacheFirst(request) {
-  const cached = await caches.match(request);
-  if (cached) return cached;
+/* Network-first for our own files, cache as the offline fallback.
+   Cache-first looked right for an "offline app shell" and was actively
+   wrong: it pinned every visitor to whatever HTML/CSS/JS they first
+   downloaded until VERSION changed. A shipped fix would never reach anyone
+   still holding a warm cache. This way the app is always current when
+   online and still fully playable when not. */
+async function networkFirst(request) {
+  const cache = await caches.open(SHELL_CACHE);
 
-  const response = await fetch(request);
-  if (response.ok) {
-    const cache = await caches.open(SHELL_CACHE);
-    cache.put(request, response.clone());
+  try {
+    const response = await fetch(request);
+    if (response.ok) cache.put(request, response.clone());
+    return response;
+  } catch (error) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    throw error;
   }
-  return response;
 }
 
 /* Serve the cached copy immediately, refresh it in the background. Keeps

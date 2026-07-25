@@ -468,6 +468,7 @@ function initInput() {
   let dragging = false, moved = 0, startTime = 0, lastX = 0, lastY = 0;
 
   el.addEventListener('pointerdown', (e) => {
+    hideHint();          // they're interacting; the nudge has done its job
     dragging = true;
     moved = 0;
     startTime = performance.now();
@@ -714,6 +715,7 @@ function logBlock(block) {
    ============================================================ */
 
 const HARD_MODE_KEY = 'jenga.hardMode';
+const SEEN_HELP_KEY = 'jenga.seenHelp';
 const ui = {};
 
 function initUI() {
@@ -735,6 +737,65 @@ function initUI() {
 
   setHardMode(localStorage.getItem(HARD_MODE_KEY) === '1');
   updateHUD();
+  initHelp();
+}
+
+/* ---------- ONBOARDING ----------
+   A first-timer otherwise gets a silent 3D object and no idea that the
+   proximity numbers count the layers above and below - which is the one
+   rule someone who knows classic Minesweeper will get wrong, because
+   there it's a flat 3x3 ring. */
+
+function initHelp() {
+  ui.helpBtn = document.getElementById('btn-help');
+  ui.helpScrim = document.getElementById('help-scrim');
+  ui.helpClose = document.getElementById('btn-help-close');
+  ui.helpGoal = document.getElementById('help-goal');
+  ui.hint = document.getElementById('gesture-hint');
+
+  ui.helpBtn.addEventListener('click', showHelp);
+  ui.helpClose.addEventListener('click', hideHelp);
+
+  // Tapping the backdrop dismisses, but only the backdrop itself - clicks
+  // that bubble up from inside the card must not close it.
+  ui.helpScrim.addEventListener('click', (e) => {
+    if (e.target === ui.helpScrim) hideHelp();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !ui.helpScrim.hidden) hideHelp();
+  });
+
+  if (localStorage.getItem(SEEN_HELP_KEY) === '1') showHint();
+  else showHelp();
+}
+
+function showHelp() {
+  ui.helpGoal.innerHTML =
+    `Clear all <b>${state.safeTotal}</b> safe blocks to win. The bar up top counts down as you go.`;
+  ui.helpScrim.hidden = false;
+  hideHint();
+}
+
+function hideHelp() {
+  ui.helpScrim.hidden = true;
+  localStorage.setItem(SEEN_HELP_KEY, '1');
+  showHint();
+}
+
+function showHint() {
+  if (state.safeCleared > 0) return;   // they've clearly worked it out
+  ui.hint.hidden = false;
+  ui.hint.classList.remove('leaving');
+  clearTimeout(ui.hintTimer);
+  ui.hintTimer = setTimeout(hideHint, 6000);
+}
+
+function hideHint() {
+  if (!ui.hint || ui.hint.hidden) return;
+  clearTimeout(ui.hintTimer);
+  ui.hint.classList.add('leaving');
+  setTimeout(() => { ui.hint.hidden = true; }, 350);
 }
 
 /* ---------- 3.1 SAFE BLOCKS REMAINING ----------
@@ -958,6 +1019,7 @@ const api = {
   watchAd, grantRevive, setHardMode, restartGame, disposeTower3D,
   layerColor, addLabel, removeLabel, refreshLabels,
   ADS, initPWA, initAds, prepareRewardedAd, simulateAd,
+  initHelp, showHelp, hideHelp, showHint, hideHint,
 };
 
 window.JengaSweeper = api;

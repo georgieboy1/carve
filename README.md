@@ -7,6 +7,18 @@ the mines standing. Built by **KG Studio**.
 knows how many of its neighbours are mines — clear one and the number
 appears in the gap it leaves behind.
 
+## How to play
+
+- **Tap** a block to pull it out. **Drag** anywhere to spin the tower.
+- The number left in the gap counts the mines touching that block —
+  **including the layers above and below it**, so up to 8. This is the bit
+  that trips up Minesweeper players, who expect a flat 2D ring.
+- A mine costs a heart and stays red where it is. Three mines ends the run.
+- Clear all 26 safe blocks to win; the bar at the top counts down.
+
+In-game, this lives in a first-run card, reopenable any time via the **?**
+button in the HUD.
+
 ## Run it locally
 
 Three.js is ESM-only, and browsers block ES modules over `file://`, so it
