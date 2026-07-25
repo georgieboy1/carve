@@ -22,7 +22,17 @@ const CONFIG = {
   // Real Jenga is 75 x 25 x 15mm -> 3 : 1 : 0.6
   BLOCK: { length: 3, width: 1, height: 0.6 },
 
+  // Structural rule makes "clear every safe block" impossible: mines are
+  // never removed, so each layer ends holding exactly its mines, and with 7
+  // mines over 12 layers you ALWAYS finish with adjacent empty (Critical)
+  // layers. Measured: 100% of towers. A DP over 2,000 towers puts the most
+  // structurally-sound removals at 23 worst case / 25 average, so a goal of
+  // 20 is always reachable with slack.
+  CLEAR_GOAL: 20,
+
   START_HEARTS: 3,
+  TILT_PER_HIT: 3,    // degrees of lean added per mine or collapse
+  SHAKE_MS: 300,
   MAX_REVIVES: 1,   // ad-revives per game; unlimited would remove the fail state
   AD_SECONDS: 3,    // simulated ad length, replaced by a real network in 5.2
 };
@@ -36,9 +46,17 @@ const state = {
 
   hearts: CONFIG.START_HEARTS,
   safeCleared: 0,
+  goal: CONFIG.CLEAR_GOAL,
   revivesUsed: 0,
   status: 'playing',   // 'playing' | 'won' | 'lost'
   hardMode: false,     // survives a restart, so it lives outside initGame()
+
+  // --- structural integrity ---
+  layerStability: [],        // per layer: 'stable' | 'critical'
+  collapsedPairs: new Set(), // pairs already charged, so they can't re-fire
+  damageTaken: 0,            // mines + collapses; drives the lean
+  foundationIntegrity: 100,  // DERIVED from hearts - see updateHUD()
+  lastFailure: null,         // 'mine' | 'collapse', picks the modal copy
 };
 
 /* ---------- 1.0b SEEDED RNG ----------
@@ -160,6 +178,51 @@ function computeAdjacency(blocks) {
   }
 }
 
+/* ---------- 1.35 STRUCTURAL INTEGRITY ----------
+   Deterministic Jenga, not simulated Jenga. A layer's fate is a rule the
+   player can read off the tower, so a collapse is always something they
+   could have seen coming - which is the whole difference between a second
+   puzzle axis and a random tax on correct play.
+
+   The Rule of Three, by what's LEFT standing (triggered mines still count -
+   they're physically still in the tower, and they hold it up):
+     3 blocks            -> stable
+     2 blocks            -> stable  (incl. left+right, centre pulled)
+     centre alone        -> stable  (balanced on the middle, real Jenga)
+     one edge alone      -> CRITICAL
+     nothing             -> CRITICAL  (extends the rule past what the
+                                       brief spelled out)
+   Two *adjacent* Critical layers bring the tower down. */
+
+function evaluateLayer(layer) {
+  const standing = state.grid[layer].filter((b) => !b.cleared);
+
+  if (standing.length >= 2) return 'stable';
+  if (standing.length === 1 && standing[0].slot === 1) return 'stable';
+  return 'critical';
+}
+
+function updateStability() {
+  for (let layer = 0; layer < CONFIG.LAYERS; layer++) {
+    state.layerStability[layer] = evaluateLayer(layer);
+  }
+}
+
+/* Returns the lowest adjacent Critical pair that hasn't already been
+   charged. Pairs fire once: a collapse costs a heart, and without this the
+   same weak spot would bill the player again on their very next tap. */
+function findCollapse() {
+  for (let layer = 0; layer < CONFIG.LAYERS - 1; layer++) {
+    if (state.layerStability[layer] !== 'critical') continue;
+    if (state.layerStability[layer + 1] !== 'critical') continue;
+
+    const key = `${layer}-${layer + 1}`;
+    if (state.collapsedPairs.has(key)) continue;
+    return { key, layer };
+  }
+  return null;
+}
+
 /* ---------- 1.4 INIT ---------- */
 
 function initGame(options = {}) {
@@ -178,8 +241,15 @@ function initGame(options = {}) {
 
   state.hearts = CONFIG.START_HEARTS;
   state.safeCleared = 0;
+  state.goal = Math.min(CONFIG.CLEAR_GOAL, state.safeTotal);
   state.revivesUsed = 0;
   state.status = 'playing';
+
+  state.layerStability = new Array(CONFIG.LAYERS).fill('stable');
+  state.collapsedPairs = new Set();
+  state.damageTaken = 0;
+  state.foundationIntegrity = 100;
+  state.lastFailure = null;
   // state.hardMode is deliberately not reset - it's a player preference.
 
   return state;
@@ -261,6 +331,9 @@ const view = {
   scene: null, camera: null, renderer: null, stage: null,
   spherical: null, target: null,
   raycaster: null, pointer: null,
+  tower: null,                    // everything that leans, lives in here
+  cameraBase: null,               // orbit position before shake is added
+  tiltTarget: 0, shakeUntil: 0,
   meshes: [], meshById: new Map(),
   labels: new Map(),              // block id -> number sprite
   flags: new Map(),               // block id -> flag marker sprite
@@ -294,6 +367,13 @@ function initScene() {
   const towerHeight = CONFIG.LAYERS * CONFIG.BLOCK.height;
   view.target = new THREE.Vector3(0, towerHeight / 2, 0);
   view.camera = new THREE.PerspectiveCamera(VIEW.FOV, 1, 0.1, 100);
+  view.cameraBase = new THREE.Vector3();
+
+  // Blocks, numbers and flags all live in one group so the buckling lean
+  // moves them together. The floor stays outside it - the ground doesn't
+  // tilt, only what's stacked on it.
+  view.tower = new THREE.Group();
+  view.scene.add(view.tower);
 
   // Orbit is stored as spherical coords around the tower's midpoint.
   view.spherical = new THREE.Spherical(10, 1.30, 0.62);
@@ -371,7 +451,13 @@ function updateLightRig() {
    landscape flip or a squat desktop window still fits. */
 function fitCamera() {
   const height = CONFIG.LAYERS * CONFIG.BLOCK.height;
-  const width = Math.hypot(CONFIG.BLOCK.length, CONFIG.BLOCK.length);
+
+  // A leaning tower is a wider tower: it pivots at the base, so the top
+  // swings out by height*sin(lean) and would otherwise clip off-screen.
+  // Pulling back as the damage mounts also reads as flinching away from it.
+  const lean = Math.abs(view.tiltTarget || 0);
+  const width = Math.hypot(CONFIG.BLOCK.length, CONFIG.BLOCK.length)
+    + height * Math.sin(lean);
 
   const vFov = (VIEW.FOV * Math.PI) / 180;
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * view.camera.aspect);
@@ -386,7 +472,8 @@ function fitCamera() {
 function updateCamera() {
   view.spherical.phi = THREE.MathUtils.clamp(
     view.spherical.phi, VIEW.MIN_PHI, VIEW.MAX_PHI);
-  view.camera.position.setFromSpherical(view.spherical).add(view.target);
+  view.cameraBase.setFromSpherical(view.spherical).add(view.target);
+  view.camera.position.copy(view.cameraBase);
   view.camera.lookAt(view.target);
 
   // Raycasting reads camera.matrixWorld, and the camera is not a child of
@@ -415,8 +502,56 @@ function syncSize() {
   view.camera.updateProjectionMatrix();
 }
 
+/* ---------- BUCKLING ----------
+   Damage never slides individual blocks - that's the chaotic-simulation
+   trap. The whole tower leans by a fixed step and the camera jolts, so the
+   feedback is dramatic but completely deterministic. */
+
+function damageTower() {
+  state.damageTaken++;
+  view.tiltTarget = THREE.MathUtils.degToRad(CONFIG.TILT_PER_HIT * state.damageTaken);
+  fitCamera();
+  view.shakeUntil = performance.now() + CONFIG.SHAKE_MS;
+}
+
+/* The ad literally straightens the tower back up - the reward is visible,
+   not just a number going up. */
+function relieveTower() {
+  state.damageTaken = Math.max(0, state.damageTaken - 1);
+  view.tiltTarget = THREE.MathUtils.degToRad(CONFIG.TILT_PER_HIT * state.damageTaken);
+  fitCamera();
+}
+
+function animateTower() {
+  const current = view.tower.rotation.z;
+  if (Math.abs(view.tiltTarget - current) > 1e-4) {
+    view.tower.rotation.z = current + (view.tiltTarget - current) * 0.12;
+  }
+
+  const now = performance.now();
+  if (now >= view.shakeUntil) {
+    if (view.shaking) {
+      view.camera.position.copy(view.cameraBase);
+      view.camera.lookAt(view.target);
+      view.shaking = false;
+    }
+    return;
+  }
+
+  const falloff = (view.shakeUntil - now) / CONFIG.SHAKE_MS;   // 1 -> 0
+  const amp = 0.17 * falloff;
+  view.camera.position.set(
+    view.cameraBase.x + (Math.random() * 2 - 1) * amp,
+    view.cameraBase.y + (Math.random() * 2 - 1) * amp,
+    view.cameraBase.z + (Math.random() * 2 - 1) * amp,
+  );
+  view.camera.lookAt(view.target);
+  view.shaking = true;
+}
+
 function renderFrame() {
   syncSize();
+  animateTower();
   positionMarkers();
   view.renderer.render(view.scene, view.camera);
 }
@@ -449,7 +584,7 @@ function buildTower3D() {
 
   for (const block of state.blocks) {
     const mesh = makeBlockMesh(block);
-    view.scene.add(mesh);
+    view.tower.add(mesh);
     view.meshes.push(mesh);
     view.meshById.set(block.id, mesh);
   }
@@ -596,6 +731,8 @@ function clearBlock(id) {
     block.triggered = true;
     markMineMesh(id);
     navigator.vibrate?.(60);
+    state.lastFailure = 'mine';
+    damageTower();
     loseHeart();
     return block;
   }
@@ -604,10 +741,27 @@ function clearBlock(id) {
   state.safeCleared++;
   removeMesh(id);
   addLabel(block);
+
+  // Structure is re-evaluated on every pull, and a collapse is charged
+  // before the win check - you don't sneak over the line on the same tap
+  // that brings the tower down.
+  updateStability();
+  const collapse = findCollapse();
+  if (collapse) triggerCollapse(collapse);
+
   updateHUD();
 
-  if (state.safeCleared === state.safeTotal) endGame('won');
+  if (state.status === 'playing' && state.safeCleared >= state.goal) endGame('won');
   return block;
+}
+
+function triggerCollapse({ key }) {
+  state.collapsedPairs.add(key);
+  state.lastFailure = 'collapse';
+
+  navigator.vibrate?.([40, 60, 90]);
+  damageTower();
+  loseHeart();
 }
 
 /* Pulls a safe block out of the scene and frees its GPU buffers. */
@@ -615,7 +769,7 @@ function removeMesh(id) {
   const mesh = view.meshById.get(id);
   if (!mesh) return;
 
-  view.scene.remove(mesh);
+  view.tower.remove(mesh);
   view.meshById.delete(id);
 
   const i = view.meshes.indexOf(mesh);
@@ -723,7 +877,7 @@ function addLabel(block) {
   sprite.position.set(block.x, block.y, block.z);
   sprite.userData.id = block.id;   // tapping it lights up its neighbours
 
-  view.scene.add(sprite);
+  view.tower.add(sprite);
   view.labels.set(block.id, sprite);
 }
 
@@ -739,7 +893,7 @@ function addFlag(block) {
   sprite.position.set(block.x, block.y, block.z);
   sprite.raycast = () => {};   // markers must never swallow a tap
 
-  view.scene.add(sprite);
+  view.tower.add(sprite);
   view.flags.set(block.id, sprite);
 }
 
@@ -747,7 +901,7 @@ function removeFlag(id) {
   const sprite = view.flags.get(id);
   if (!sprite) return;
 
-  view.scene.remove(sprite);
+  view.tower.remove(sprite);
   sprite.material.dispose();
   view.flags.delete(id);
 }
@@ -813,11 +967,9 @@ function clearSelection() {
 const markerDir = new THREE.Vector3();
 
 function placeMarker(sprite, block, boundX, boundZ) {
-  markerDir.set(
-    view.camera.position.x - block.x,
-    0,
-    view.camera.position.z - block.z,
-  );
+  // localCam, not camera.position: block coords are tower-local, and the
+  // tower leans once it takes damage.
+  markerDir.set(localCam.x - block.x, 0, localCam.z - block.z);
 
   // Scale the direction until the first axis hits its bound - that axis is
   // the face the camera is looking through.
@@ -838,8 +990,15 @@ function placeMarker(sprite, block, boundX, boundZ) {
    sliced by its neighbours. Numbers don't have this problem: they're inside
    a gap, which is exactly where they belong. */
 const FLAG_ENVELOPE = CONFIG.BLOCK.length / 2 + VIEW.FLAG_PROUD;
+const localCam = new THREE.Vector3();
 
 function positionMarkers() {
+  if (!view.labels.size && !view.flags.size) return;
+
+  view.tower.updateMatrixWorld();
+  localCam.copy(view.camera.position);
+  view.tower.worldToLocal(localCam);
+
   for (const [id, sprite] of view.labels) {
     const block = state.blocks[id];
     placeMarker(
@@ -858,7 +1017,7 @@ function removeLabel(id) {
   const sprite = view.labels.get(id);
   if (!sprite) return;
 
-  view.scene.remove(sprite);
+  view.tower.remove(sprite);
   sprite.material.dispose();   // the shared digit texture is NOT disposed
   view.labels.delete(id);
 }
@@ -879,7 +1038,7 @@ function disposeTower3D() {
   clearSelection();
 
   for (const mesh of view.meshById.values()) {
-    view.scene.remove(mesh);
+    view.tower.remove(mesh);
     mesh.geometry.dispose();
     for (const child of mesh.children) child.geometry.dispose();
   }
@@ -923,6 +1082,7 @@ function initUI() {
   ui.hearts = document.getElementById('hearts');
   ui.safeCount = document.getElementById('safe-count');
   ui.fill = document.getElementById('progress-fill');
+  ui.integrityFill = document.getElementById('integrity-fill');
   ui.scrim = document.getElementById('modal-scrim');
   ui.modal = document.getElementById('modal');
   ui.emoji = document.getElementById('modal-emoji');
@@ -973,7 +1133,7 @@ function initHelp() {
 
 function showHelp() {
   ui.helpGoal.innerHTML =
-    `Clear all <b>${state.safeTotal}</b> safe blocks to win. The bar up top counts down as you go.`;
+    `Pull <b>${state.goal}</b> blocks without collapsing the tower. The bar up top counts down as you go.`;
   ui.helpScrim.hidden = false;
   hideHint();
 }
@@ -1004,10 +1164,19 @@ function hideHint() {
    are still standing, over how many there were to begin with. */
 
 function updateHUD() {
-  const remaining = state.safeTotal - state.safeCleared;
+  const remaining = Math.max(0, state.goal - state.safeCleared);
 
   ui.safeCount.textContent = remaining;
-  ui.fill.style.width = `${(remaining / state.safeTotal) * 100}%`;
+  ui.fill.style.width = `${(remaining / state.goal) * 100}%`;
+
+  // Integrity is DERIVED from hearts rather than counted separately. Two
+  // independent damage counters would drift the moment a revive granted a
+  // heart, and both of them gate the same fail state.
+  state.foundationIntegrity = Math.max(
+    0, Math.round((state.hearts / CONFIG.START_HEARTS) * 100));
+
+  ui.integrityFill.style.width = `${state.foundationIntegrity}%`;
+  ui.integrityFill.style.background = integrityColor(state.foundationIntegrity);
 
   // A revive can push hearts past the starting count, so size to whichever
   // is larger rather than assuming three slots.
@@ -1017,6 +1186,13 @@ function updateHUD() {
     markup += `<span class="heart${i < state.hearts ? '' : ' spent'}">&hearts;</span>`;
   }
   ui.hearts.innerHTML = markup;
+}
+
+/* Pastel mint at full integrity -> bright coral as the foundation goes. */
+function integrityColor(pct) {
+  const t = pct / 100;
+  const mix = (from, to) => Math.round(from + (to - from) * t);
+  return `rgb(${mix(255, 127)}, ${mix(107, 178)}, ${mix(138, 166)})`;
 }
 
 /* ---------- 3.2 HEART ENGINE ---------- */
@@ -1038,16 +1214,28 @@ function endGame(result) {
 
 function showModal(kind) {
   const won = kind === 'won';
+  const collapsed = state.lastFailure === 'collapse';
   const canRevive = !won && state.revivesUsed < CONFIG.MAX_REVIVES;
 
-  ui.emoji.textContent = won ? '🏆' : '💔';
-  ui.title.textContent = won ? 'Tower swept!' : 'Out of hearts';
-  ui.body.textContent = won
-    ? `All ${state.safeTotal} safe blocks cleared. The tower still stands.`
-    : `You cleared ${state.safeCleared} of ${state.safeTotal} safe blocks.`;
+  if (won) {
+    ui.emoji.textContent = '🏆';
+    ui.title.textContent = 'Tower swept!';
+    ui.body.textContent =
+      `All ${state.goal} blocks pulled and the tower still stands.`;
+  } else if (collapsed) {
+    ui.emoji.textContent = '🧱';
+    ui.title.textContent = 'Tower Collapsed!';
+    ui.body.textContent =
+      `Two neighbouring layers gave way at ${state.safeCleared} of ${state.goal} blocks.`;
+  } else {
+    ui.emoji.textContent = '💔';
+    ui.title.textContent = 'Out of hearts';
+    ui.body.textContent =
+      `You pulled ${state.safeCleared} of ${state.goal} blocks.`;
+  }
 
   ui.adBtn.hidden = !canRevive;
-  resetAdButton();
+  resetAdButton(collapsed);
   if (canRevive) prepareRewardedAd();
 
   ui.scrim.hidden = false;
@@ -1087,9 +1275,11 @@ function watchAd() {
   simulateAd();
 }
 
-function resetAdButton() {
+function resetAdButton(collapsed = state.lastFailure === 'collapse') {
   ui.adBtn.disabled = false;
-  ui.adBtn.textContent = '▶  Watch ad  ·  +1 heart';
+  ui.adBtn.textContent = collapsed
+    ? '▶  Watch ad  ·  Glue it back together'
+    : '▶  Watch ad  ·  +1 heart';
 }
 
 function simulateAd() {
@@ -1112,6 +1302,7 @@ function grantRevive() {
   state.revivesUsed++;
   state.hearts++;
   state.status = 'playing';
+  relieveTower();     // the tower visibly straightens back up
   updateHUD();
   hideModal();
 }
@@ -1130,6 +1321,8 @@ function restartGame() {
   disposeTower3D();
   initGame();
   buildTower3D();
+  view.tiltTarget = 0;
+  view.tower.rotation.z = 0;
   hideModal();
   updateHUD();
   debugPrintTower();
@@ -1220,6 +1413,8 @@ const api = {
   watchAd, grantRevive, setHardMode, restartGame, disposeTower3D,
   layerColor, addLabel, removeLabel, refreshLabels,
   toggleFlag, addFlag, removeFlag, toggleSelection, clearSelection, pick,
+  evaluateLayer, updateStability, findCollapse, triggerCollapse,
+  damageTower, relieveTower, integrityColor,
   ADS, initPWA, initAds, prepareRewardedAd, simulateAd,
   initHelp, showHelp, hideHelp, showHint, hideHint,
 };

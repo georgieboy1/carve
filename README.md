@@ -16,8 +16,11 @@ appears in the gap it leaves behind.
 - **Tap a number** to light up the blocks it's counting.
 - **Press and hold** a block to flag it. Flagged blocks are locked, so a
   mis-tap can't cost you a heart. Hold again to unflag.
-- A mine costs a heart and stays red where it is. Three mines ends the run.
-- Clear all 29 safe blocks to win; the bar at the top counts down.
+- A layer holds while **two blocks** remain, or just the **middle one**. A
+  lone edge block propping up a layer makes it **critical** — and two
+  critical layers stacked next to each other collapse the tower.
+- Mines and collapses each cost a heart and lean the tower further.
+- **Pull 20 blocks** without collapsing it; the bar at the top counts down.
 
 In-game, this lives in a first-run card, reopenable any time via the **?**
 button in the HUD.
@@ -51,6 +54,8 @@ Everything worth adjusting lives in `CONFIG` at the top of `game.js`:
 | Key | Default | Notes |
 |---|---|---|
 | `MINE_COUNT` | `7` | Out of 36 blocks = 19%, Minesweeper Expert density. Raising it past ~8 removes the zeros that deduction needs — see `blueprint.md` |
+| `CLEAR_GOAL` | `20` | Blocks to pull to win. Structurally-sound ceiling is 23 worst case, so don't raise this past ~22 |
+| `TILT_PER_HIT` | `3` | Degrees of lean added per mine or collapse |
 | `START_HEARTS` | `3` | |
 | `MAX_REVIVES` | `1` | Ad-revives per game. `0` disables the reward loop |
 | `AD_SECONDS` | `3` | Simulated ad length |

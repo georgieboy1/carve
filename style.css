@@ -142,6 +142,25 @@ body {
   transition: width .38s cubic-bezier(.34, 1.3, .64, 1);
 }
 
+/* Secondary Integrity Meter: thinner and quieter than the goal bar, so it
+   reads as a condition readout rather than a second objective. Colour is
+   set from JS so it can slide smoothly mint -> coral. */
+#integrity-track {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 99px;
+  background: #efe2e9;
+  overflow: hidden;
+}
+
+#integrity-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 99px;
+  background: var(--mint);
+  transition: width .4s cubic-bezier(.34, 1.3, .64, 1), background .4s ease;
+}
+
 /* Red flash across the HUD when a mine costs a heart. */
 body.damage #progress-track { background: #f7ccd6; }
 body.damage #progress-fill { background: var(--danger); }
@@ -316,6 +335,14 @@ body.damage #progress-fill { background: var(--danger); }
   font: 600 11px -apple-system, "Segoe UI", system-ui, sans-serif;
   dominant-baseline: middle;
 }
+
+.help-diagram .cell rect.bad { fill: #f7bfcb; }
+.help-diagram .row-label.ok { fill: #6f9e91; }
+.help-diagram .row-label.warn { fill: var(--danger); }
+
+/* The stability diagram reads as rows of a tower, so no dashed "gap"
+   outline - an empty slot here just means the block is gone. */
+.stability .gap { fill: #f7f1f5; stroke: none; }
 
 #help-goal {
   margin: 4px 0 17px;

@@ -21,11 +21,14 @@
 
     <div id="progress">
       <div id="progress-label">
-        <span>Safe blocks remaining</span>
+        <span>Blocks to pull</span>
         <span id="safe-count" aria-live="polite">–</span>
       </div>
       <div id="progress-track">
         <div id="progress-fill"></div>
+      </div>
+      <div id="integrity-track" role="img" aria-label="Foundation integrity">
+        <div id="integrity-fill"></div>
       </div>
     </div>
 
@@ -94,8 +97,36 @@
         <li>
           <span class="step-num">4</span>
           <div class="step-body">
+            <h3>Keep it standing</h3>
+            <p>A layer holds as long as <b>two blocks</b> are left, or just the <b>middle one</b>. Leave a single edge block propping up a layer and it turns <b>critical</b>.</p>
+            <p class="step-tip">Two critical layers <b>stacked next to each other</b> bring the tower down &mdash; and that costs a heart too.</p>
+
+            <svg class="help-diagram stability" viewBox="0 0 208 100" role="img"
+                 aria-label="Three examples. Two blocks left is stable. The middle block alone is stable. A single edge block alone is critical.">
+              <g class="cell">
+                <rect x="4"  y="4"  width="36" height="26" rx="7"/>
+                <rect x="84" y="4"  width="36" height="26" rx="7"/>
+                <rect x="44" y="37" width="36" height="26" rx="7"/>
+                <rect class="bad" x="4" y="70" width="36" height="26" rx="7"/>
+              </g>
+              <rect class="gap" x="44" y="4"  width="36" height="26" rx="7"/>
+              <rect class="gap" x="4"  y="37" width="36" height="26" rx="7"/>
+              <rect class="gap" x="84" y="37" width="36" height="26" rx="7"/>
+              <rect class="gap" x="44" y="70" width="36" height="26" rx="7"/>
+              <rect class="gap" x="84" y="70" width="36" height="26" rx="7"/>
+
+              <text class="row-label ok"   x="128" y="21">stable</text>
+              <text class="row-label ok"   x="128" y="54">stable</text>
+              <text class="row-label warn" x="128" y="87">critical</text>
+            </svg>
+          </div>
+        </li>
+
+        <li>
+          <span class="step-num">5</span>
+          <div class="step-body">
             <h3>Mind your hearts</h3>
-            <p>Hit a mine and it turns red and stays put, costing you a heart. Lose all three and the run ends.</p>
+            <p>Mines and collapses each cost a heart, and the tower leans further every time. Lose all three and the run ends.</p>
           </div>
         </li>
       </ol>
