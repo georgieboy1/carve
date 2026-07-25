@@ -241,6 +241,52 @@ a.pill { text-decoration: none; display: inline-block; }
 .row b { color: var(--mint); text-transform: capitalize; }
 .row:active { transform: scale(.985); }
 
+#zen-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(74,59,73,.38);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+#zen-sheet[hidden] { display: none; }
+
+#zen-card {
+  width: 100%;
+  max-width: 320px;
+  padding: 24px 22px 18px;
+  border-radius: 26px;
+  background: var(--card);
+  text-align: center;
+  box-shadow: 0 18px 44px rgba(74,59,73,.24);
+  animation: drop .62s cubic-bezier(.22,1,.36,1) both;
+}
+
+#zen-card .zen-icon {
+  font-size: 26px;
+  color: #4f8d7d;
+  margin-bottom: 6px;
+}
+
+#zen-card h3 { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
+
+#zen-card p {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  margin-bottom: 18px;
+}
+
+#zen-card .zen-note {
+  font-size: 11.5px;
+  margin: 9px 0 4px;
+  color: #4f8d7d;
+}
+
 #toast {
   position: fixed;
   left: 50%;

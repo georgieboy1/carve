@@ -48,6 +48,24 @@ const stepIn = (i) => i - packStart(i);
 const ownsPack = (pack) => pack.free || save.owned.includes(pack.id);
 const canPlay = (i) => ownsPack(packOf(i));
 
+/* ---------- ZEN ENTITLEMENT ----------
+   Zen is premium, but deliberately NOT its own SKU sitting behind a wall
+   that says "pay to play comfortably". Two ways in:
+
+     - it comes free with ANY pack purchase, so it sweetens the first sale
+       rather than competing with it
+     - or it can be unlocked on its own
+
+   Plus one free run, because nobody should be asked to buy a feel they have
+   never felt. The genuine accessibility settings — clue display and glyph
+   set — stay free forever and are NOT part of this gate. */
+const PAID_PACKS = PACKS.filter((p) => !p.free).map((p) => p.id);
+
+const hasZen = () =>
+  !!save.zenUnlocked || save.owned.some((id) => PAID_PACKS.includes(id));
+
+const zenTrialAvailable = () => !hasZen() && !save.zenTrialUsed;
+
 /* Derived, so adding a taller level can't silently leave its top row with
    no material. Hand-maintaining this number cost the Keep a white roof. */
 CONFIG.MAX_Y = Math.max(...LEVELS.map((s) => parse(s).grid.y));
@@ -71,6 +89,8 @@ const blankSave = () => ({
   clueMode: 'chips',
   glyphs: 'numbers',     // numbers | letters | shapes
   mode: 'scored',        // scored | zen
+  zenUnlocked: false,
+  zenTrialUsed: false,
 });
 
 function readSave() {
@@ -721,6 +741,16 @@ function refreshClues() {
    stars. Retrying the level clears it — the penalty is on the attempt, not
    on the player. */
 function toggleMode() {
+  // Leaving Zen is always free. Only entering it is gated.
+  if (!isZen()) {
+    if (!hasZen()) {
+      if (!zenTrialAvailable()) return openZenOffer();
+      save.zenTrialUsed = true;
+      writeSave();
+      toast('Zen trial — this one is on us');
+    }
+  }
+
   state.mode = isZen() ? 'scored' : 'zen';
   save.mode = state.mode;
   writeSave();
@@ -731,6 +761,20 @@ function toggleMode() {
   toast(isZen()
     ? 'Zen — no limits, no stars'
     : (state.unscored ? 'Scored — this attempt still unscored' : 'Scored — 3 stars to lose'));
+}
+
+function openZenOffer() {
+  ui.zenSheet.hidden = false;
+}
+
+/* Prototype stand-in for a real purchase. In production this is the store
+   callback; everything downstream of it stays exactly as it is. */
+function unlockZen() {
+  save.zenUnlocked = true;
+  writeSave();
+  ui.zenSheet.hidden = true;
+  updateHUD();
+  toast('Zen unlocked — carve as long as you like');
 }
 
 function cycleGlyphs() {
@@ -1014,7 +1058,11 @@ function updateHUD() {
   ui.stars.innerHTML = isZen() || state.unscored
     ? '<span class="zen-tag">' + (isZen() ? 'Zen' : 'Unscored') + '</span>'
     : starMarkup(currentStars());
-  ui.modeBtn.textContent = isZen() ? 'Mode · Zen' : 'Mode · Scored';
+  // The lock is shown on the pill rather than sprung on tap, so nobody
+  // taps expecting Zen and gets a sales pitch instead.
+  ui.modeBtn.textContent = isZen()
+    ? 'Mode · Zen'
+    : `Mode · Scored${hasZen() || zenTrialAvailable() ? '' : ' 🔒'}`;
 
   // Spelled out rather than iconographic on purpose: an icon that means
   // three different things is exactly the wrong call for a game that's
@@ -1192,6 +1240,14 @@ ui.glyphBtn.addEventListener('click', cycleGlyphs);
 ui.modeBtn.addEventListener('click', toggleMode);
 ui.hintBtn.addEventListener('click', useHint);
 
+ui.zenSheet = document.getElementById('zen-sheet');
+document.getElementById('zen-buy').addEventListener('click', unlockZen);
+document.getElementById('zen-close')
+  .addEventListener('click', () => { ui.zenSheet.hidden = true; });
+ui.zenSheet.addEventListener('click', (e) => {
+  if (e.target === ui.zenSheet) ui.zenSheet.hidden = true;
+});
+
 ui.sheet = document.getElementById('sheet');
 const closeSheet = () => { ui.sheet.hidden = true; };
 document.getElementById('display-btn')
@@ -1227,6 +1283,7 @@ window.Carve = {
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
   cycleGlyphs, toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
+  hasZen, zenTrialAvailable, unlockZen, openZenOffer,
   save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
   get levelIndex() { return levelIndex; },

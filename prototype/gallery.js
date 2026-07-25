@@ -159,7 +159,11 @@ function buildOverlay(cellW, cellH) {
     if (!unlocked) {
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = 'Unlock pack';
+      // Zen rides along with any pack, so say so where the money is asked
+      // for rather than only in the Zen sheet the player may never open.
+      const carriesZen = !save.zenUnlocked
+        && !PACKS.some((p) => !p.free && save.owned.includes(p.id));
+      button.textContent = carriesZen ? 'Unlock — with Zen' : 'Unlock pack';
       button.style.pointerEvents = 'auto';
       button.addEventListener('click', () => {
         save.owned.push(pack.id);
