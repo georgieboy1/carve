@@ -85,8 +85,96 @@ const SET_NAMES = ['First cuts', 'Stonework'];
    no material. Hand-maintaining this number cost the Keep a white roof. */
 CONFIG.MAX_Y = Math.max(...SHAPES.map((s) => s.grid.y));
 
-let levelIndex = Math.min(
-  Number(localStorage.getItem('carve.level') || 0), SHAPES.length - 1);
+/* ---------- SAVE ----------
+   One versioned record instead of loose keys, because progress is about to
+   be worth something. Two rules it has to honour:
+     - a corrupt or half-written save must never brick the game
+     - a save from an older build must never be silently dropped
+   A static PWA has no server, so there's also an export code: the whole
+   save as text the player can carry to another device by hand. */
+
+const SAVE_KEY = 'carve.save';
+const SAVE_VERSION = 1;
+
+const blankSave = () => ({
+  version: SAVE_VERSION,
+  level: 0,
+  best: {},              // level name -> { hearts, hints, at }
+  clueMode: 'chips',
+});
+
+function readSave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return migrateLooseKeys();
+
+    const data = JSON.parse(raw);
+    if (typeof data !== 'object' || data === null) return blankSave();
+
+    // Unknown future version: keep what we understand rather than wiping.
+    return { ...blankSave(), ...data, version: SAVE_VERSION };
+  } catch {
+    return blankSave();   // corrupt JSON must not brick the game
+  }
+}
+
+/* Earlier builds wrote carve.level / carve.clueMode directly. Fold them in
+   once so nobody loses the progress they already had. */
+function migrateLooseKeys() {
+  const save = blankSave();
+  const level = Number(localStorage.getItem('carve.level'));
+  const mode = localStorage.getItem('carve.clueMode');
+  if (Number.isFinite(level) && level > 0) save.level = level;
+  if (mode) save.clueMode = mode;
+  return save;
+}
+
+const save = readSave();
+
+function writeSave() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  } catch {
+    /* private mode / quota - the run still works, it just won't persist */
+  }
+}
+
+function recordWin(name, hearts, hints) {
+  const prev = save.best[name];
+  if (!prev || hearts > prev.hearts) {
+    save.best[name] = { hearts, hints, at: Date.now() };
+  }
+  writeSave();
+}
+
+const completedCount = () => Object.keys(save.best).length;
+
+/* Portable save code. Base64 of the record with a short checksum so a
+   mistyped code is rejected instead of half-applied. */
+function exportSave() {
+  const body = JSON.stringify(save);
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) sum = (sum * 31 + body.charCodeAt(i)) >>> 0;
+  return `${btoa(body)}.${sum.toString(36)}`;
+}
+
+function importSave(code) {
+  try {
+    const [encoded, checksum] = String(code).trim().split('.');
+    const body = atob(encoded);
+    let sum = 0;
+    for (let i = 0; i < body.length; i++) sum = (sum * 31 + body.charCodeAt(i)) >>> 0;
+    if (sum.toString(36) !== checksum) return false;
+
+    Object.assign(save, blankSave(), JSON.parse(body), { version: SAVE_VERSION });
+    writeSave();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let levelIndex = Math.min(Math.max(save.level | 0, 0), SHAPES.length - 1);
 let SHAPE = SHAPES[levelIndex];
 
 const setOf = (i) => Math.floor(i / PER_SET);
@@ -101,7 +189,7 @@ const state = {
   hearts: CONFIG.START_HEARTS,
   wasteTotal: 0, wasteLeft: 0,
   status: 'playing',
-  clueMode: localStorage.getItem('carve.clueMode') || 'chips',
+  clueMode: save.clueMode,
   hintsLeft: CONFIG.HINTS,
   revivesUsed: 0,
 };
@@ -518,7 +606,8 @@ function refreshClues() {
 function cycleClueMode() {
   const order = ['chips', 'ghost', 'off'];
   state.clueMode = order[(order.indexOf(state.clueMode) + 1) % order.length];
-  localStorage.setItem('carve.clueMode', state.clueMode);
+  save.clueMode = state.clueMode;
+  writeSave();
   refreshClues();
   updateHUD();
   toast(`Clues: ${state.clueMode}`);
@@ -595,12 +684,15 @@ function finish(result) {
   const setDone = won && stepIn(levelIndex) === PER_SET - 1;
   const canRevive = !won && state.revivesUsed < CONFIG.MAX_REVIVES;
 
+  if (won) recordWin(SHAPE.name, state.hearts, state.hintsLeft);
+
   ui.bannerEmoji.textContent = won ? (setDone ? '🏛️' : '✨') : '💔';
   ui.bannerTitle.textContent = won
     ? (setDone ? `${SET_NAMES[setOf(levelIndex)] || 'Set'} complete` : `${SHAPE.name} revealed`)
     : 'Out of hearts';
   ui.bannerBody.textContent = won
-    ? `Carved all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left.`
+    ? `Carved all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left. `
+      + `${completedCount()} of ${SHAPES.length} sculptures collected.`
     : `${state.wasteTotal - state.wasteLeft} of ${state.wasteTotal} carved before the chisel slipped.`;
 
   ui.adBtn.hidden = !canRevive;
@@ -771,7 +863,8 @@ function toast(message) {
 function loadLevel(index) {
   levelIndex = THREE.MathUtils.clamp(index, 0, SHAPES.length - 1);
   SHAPE = SHAPES[levelIndex];
-  localStorage.setItem('carve.level', levelIndex);
+  save.level = levelIndex;
+  writeSave();
 
   disposeVoxels();
   buildLevel();
@@ -907,6 +1000,7 @@ window.Carve = {
   carve, toggleMark, pick, restart, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextLevel, retryLevel, watchAd, grantRevive, ADS,
+  save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
   get levelIndex() { return levelIndex; },
 };
