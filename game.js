@@ -15,7 +15,10 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const CONFIG = {
   LAYERS: 12,
   BLOCKS_PER_LAYER: 3,
-  MINE_COUNT: 10,
+  // 7/36 = 19%, matching Minesweeper Expert. At the old 10 (28%) only ~2.4
+  // zeros existed per tower and 26% of towers had none at all - with no
+  // zero there's no foothold, and the opening move is a coin flip.
+  MINE_COUNT: 7,
   // Real Jenga is 75 x 25 x 15mm -> 3 : 1 : 0.6
   BLOCK: { length: 3, width: 1, height: 0.6 },
 
@@ -85,6 +88,7 @@ function createTower() {
         neighbors: [],      // neighbor ids
         cleared: false,     // pulled out of the tower
         triggered: false,   // mine that has been set off (stays in the tower)
+        flagged: false,     // player's own "I think this is a mine" mark
       };
 
       blocks.push(block);
@@ -215,8 +219,12 @@ const VIEW = {
 
   CORNER_RADIUS: 0.075,   // must stay under half the smallest dim (0.56 / 2)
   CORNER_SEGMENTS: 4,
-  LABEL_SCALE: 0.44,      // fits inside the 0.6-tall gap a block leaves
-  LABEL_INSET: 0.3,       // how far inside the gap mouth the number sits
+  LABEL_SCALE: 0.5,       // fits inside the 0.6-tall gap a block leaves
+  LABEL_INSET: 0.26,      // how far inside the gap mouth the number sits
+  FLAG_SCALE: 0.34,
+  FLAG_PROUD: 0.04,       // flags sit just OUTSIDE the block face
+  LONG_PRESS: 480,        // ms held before a press becomes a flag
+  SELECT_GROW: 1.28,      // how much the selected number swells
 };
 
 /* ---------- 4.1 PALETTE ----------
@@ -255,7 +263,9 @@ const view = {
   raycaster: null, pointer: null,
   meshes: [], meshById: new Map(),
   labels: new Map(),              // block id -> number sprite
-  layerMaterials: null, mineMaterial: null,
+  flags: new Map(),               // block id -> flag marker sprite
+  selectedId: null,               // number whose neighbours are lit up
+  layerMaterials: null, mineMaterial: null, highlightMaterial: null,
 };
 
 /* ---------- 2.1 SCENE ---------- */
@@ -378,6 +388,12 @@ function updateCamera() {
     view.spherical.phi, VIEW.MIN_PHI, VIEW.MAX_PHI);
   view.camera.position.setFromSpherical(view.spherical).add(view.target);
   view.camera.lookAt(view.target);
+
+  // Raycasting reads camera.matrixWorld, and the camera is not a child of
+  // the scene, so scene.updateMatrixWorld() never reaches it. Refreshing it
+  // here keeps picking correct even before the first frame has rendered.
+  view.camera.updateMatrixWorld();
+
   updateLightRig();
 }
 
@@ -401,7 +417,7 @@ function syncSize() {
 
 function renderFrame() {
   syncSize();
-  positionLabels();
+  positionMarkers();
   view.renderer.render(view.scene, view.camera);
 }
 
@@ -423,6 +439,12 @@ function buildTower3D() {
     view.mineMaterial = new THREE.MeshStandardMaterial({
       color: 0xe2607d, roughness: 0.5, metalness: 0,
     });
+    // Amber: reads instantly against every pastel in the ramp, and can't be
+    // confused with the mine red.
+    view.highlightMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffc978, emissive: 0x6b4310, emissiveIntensity: 0.32,
+      roughness: 0.45, metalness: 0,
+    });
   }
 
   for (const block of state.blocks) {
@@ -431,6 +453,11 @@ function buildTower3D() {
     view.meshes.push(mesh);
     view.meshById.set(block.id, mesh);
   }
+
+  // Raycasting reads matrixWorld, which is otherwise only refreshed during
+  // render(). Until the next frame lands, every fresh mesh would still be
+  // sitting at the origin as far as a tap is concerned.
+  view.scene.updateMatrixWorld(true);
 }
 
 function makeBlockMesh(block) {
@@ -466,15 +493,31 @@ function initInput() {
   el.style.touchAction = 'none';
 
   let dragging = false, moved = 0, startTime = 0, lastX = 0, lastY = 0;
+  let pressTimer = null, longFired = false;
+
+  const cancelLongPress = () => {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  };
 
   el.addEventListener('pointerdown', (e) => {
     hideHint();          // they're interacting; the nudge has done its job
     dragging = true;
     moved = 0;
+    longFired = false;
     startTime = performance.now();
     lastX = e.clientX;
     lastY = e.clientY;
     el.setPointerCapture(e.pointerId);
+
+    // Hold still long enough and the press becomes a flag instead of a pull.
+    const { clientX, clientY } = e;
+    pressTimer = setTimeout(() => {
+      longFired = true;
+      dragging = false;        // also stops this gesture rotating the camera
+      const hit = pick(clientX, clientY);
+      if (hit && hit.kind === 'block') toggleFlag(hit.id);
+    }, VIEW.LONG_PRESS);
   });
 
   el.addEventListener('pointermove', (e) => {
@@ -485,32 +528,51 @@ function initInput() {
     lastY = e.clientY;
     moved += Math.hypot(dx, dy);
 
+    if (moved >= VIEW.TAP_SLOP) cancelLongPress();
+
     view.spherical.theta -= dx * VIEW.DRAG_SPEED;
     view.spherical.phi -= dy * VIEW.DRAG_SPEED;
     updateCamera();
   });
 
   const end = (e) => {
-    if (!dragging) return;
+    cancelLongPress();
+    if (!dragging || longFired) return;
     dragging = false;
     const quick = performance.now() - startTime < VIEW.TAP_TIME;
     if (moved < VIEW.TAP_SLOP && quick) tapAt(e.clientX, e.clientY);
   };
 
   el.addEventListener('pointerup', end);
-  el.addEventListener('pointercancel', () => { dragging = false; });
+  el.addEventListener('pointercancel', () => {
+    cancelLongPress();
+    dragging = false;
+  });
 }
 
-function tapAt(clientX, clientY) {
+/* Nearest hit across blocks and number chips, so a chip sitting in a gap
+   can be tapped without the block behind it stealing the press. */
+function pick(clientX, clientY) {
   const rect = view.renderer.domElement.getBoundingClientRect();
   view.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
   view.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
   view.raycaster.setFromCamera(view.pointer, view.camera);
-  const hits = view.raycaster.intersectObjects(view.meshes, false);
-  if (!hits.length) return;
+  const targets = [...view.meshes, ...view.labels.values()];
+  const hits = view.raycaster.intersectObjects(targets, false);
+  if (!hits.length) return null;
 
-  clearBlock(hits[0].object.userData.id);
+  const object = hits[0].object;
+  return { kind: object.isSprite ? 'label' : 'block', id: object.userData.id };
+}
+
+function tapAt(clientX, clientY) {
+  const hit = pick(clientX, clientY);
+
+  if (!hit) return clearSelection();
+  if (hit.kind === 'label') return toggleSelection(hit.id);
+
+  clearBlock(hit.id);
 }
 
 /* The single entry point for acting on a block, so all game rules live in
@@ -520,6 +582,11 @@ function clearBlock(id) {
   if (!block || block.cleared || block.triggered) return null;
   if (state.status !== 'playing') return null;
 
+  // A flag is a deliberate "don't touch this". Honouring it is the whole
+  // point - otherwise one fat-fingered tap undoes a correct deduction.
+  if (block.flagged) return null;
+
+  clearSelection();
   logBlock(block);
 
   if (block.isMine) {
@@ -528,6 +595,7 @@ function clearBlock(id) {
     // the player just paid a heart for.
     block.triggered = true;
     markMineMesh(id);
+    navigator.vibrate?.(60);
     loseHeart();
     return block;
   }
@@ -575,51 +643,166 @@ function markMineMesh(id) {
    angle, and depth testing means it's correctly hidden by the blocks in
    front of it when you spin round to the far side. */
 
-const digitTextures = new Map();
+const spriteTextures = new Map();
 
-function digitTexture(n) {
-  if (digitTextures.has(n)) return digitTextures.get(n);
+function spriteTexture(key, draw) {
+  if (spriteTextures.has(key)) return spriteTextures.get(key);
 
   const size = 256;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
-
-  const ctx = canvas.getContext('2d');
-  ctx.font = `700 ${size * 0.72}px -apple-system, "Segoe UI", system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-
-  // White halo first so the glyph survives against any layer colour.
-  ctx.lineWidth = size * 0.11;
-  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-  ctx.lineJoin = 'round';
-  ctx.strokeText(n, size / 2, size * 0.53);
-
-  ctx.fillStyle = DIGIT_COLORS[n];
-  ctx.fillText(n, size / 2, size * 0.53);
+  draw(canvas.getContext('2d'), size);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
 
-  digitTextures.set(n, texture);
+  spriteTextures.set(key, texture);
   return texture;
+}
+
+/* A solid chip, not a bare glyph. The old outlined digit sat in a shadowed
+   recess and had to compete with whatever pastel was behind it; a filled
+   card with its own shadow reads as a UI token floating in the gap and
+   stays legible at arm's length on a phone. */
+function drawChip(ctx, size, fill, stroke) {
+  const pad = size * 0.1;
+
+  ctx.shadowColor = 'rgba(74,59,73,0.32)';
+  ctx.shadowBlur = size * 0.08;
+  ctx.shadowOffsetY = size * 0.025;
+  ctx.beginPath();
+  ctx.roundRect(pad, pad, size - pad * 2, size - pad * 2, size * 0.26);
+  ctx.fillStyle = fill;
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.lineWidth = size * 0.04;
+  ctx.strokeStyle = stroke;
+  ctx.stroke();
+}
+
+function centredText(ctx, size, text, color) {
+  ctx.fillStyle = color;
+  ctx.font = `800 ${size * 0.46}px -apple-system, "Segoe UI", system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, size / 2, size * 0.53);
+}
+
+function digitTexture(n) {
+  return spriteTexture(`d${n}`, (ctx, size) => {
+    drawChip(ctx, size, '#fffcfd', DIGIT_COLORS[n]);
+    centredText(ctx, size, n, DIGIT_COLORS[n]);
+  });
+}
+
+function flagTexture() {
+  return spriteTexture('flag', (ctx, size) => {
+    drawChip(ctx, size, '#ff6b8a', '#dd3f5e');
+    centredText(ctx, size, '!', '#fffdfe');
+  });
+}
+
+function makeSprite(map, scale) {
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map,
+    transparent: true,
+    depthWrite: false,   // never punch a hole in what's behind it
+  }));
+  sprite.scale.setScalar(scale);
+  return sprite;
 }
 
 function addLabel(block) {
   if (state.hardMode || view.labels.has(block.id)) return;
 
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: digitTexture(block.adjacent),
-    transparent: true,
-    depthWrite: false,   // never punch a hole in what's behind it
-  }));
-
+  const sprite = makeSprite(digitTexture(block.adjacent), VIEW.LABEL_SCALE);
   sprite.position.set(block.x, block.y, block.z);
-  sprite.scale.setScalar(VIEW.LABEL_SCALE);
+  sprite.userData.id = block.id;   // tapping it lights up its neighbours
 
   view.scene.add(sprite);
   view.labels.set(block.id, sprite);
+}
+
+/* ---------- FLAGS ----------
+   Somewhere to put a conclusion. Without them a deduction lives only in the
+   player's head, and a single mis-tap on a block they'd correctly reasoned
+   about costs a heart - so flagged blocks are also locked against tapping. */
+
+function addFlag(block) {
+  if (view.flags.has(block.id)) return;
+
+  const sprite = makeSprite(flagTexture(), VIEW.FLAG_SCALE);
+  sprite.position.set(block.x, block.y, block.z);
+  sprite.raycast = () => {};   // markers must never swallow a tap
+
+  view.scene.add(sprite);
+  view.flags.set(block.id, sprite);
+}
+
+function removeFlag(id) {
+  const sprite = view.flags.get(id);
+  if (!sprite) return;
+
+  view.scene.remove(sprite);
+  sprite.material.dispose();
+  view.flags.delete(id);
+}
+
+function toggleFlag(id) {
+  const block = state.blocks[id];
+  if (!block || block.cleared || block.triggered) return null;
+  if (state.status !== 'playing') return null;
+
+  block.flagged = !block.flagged;
+  if (block.flagged) addFlag(block);
+  else removeFlag(id);
+
+  navigator.vibrate?.(15);
+  return block;
+}
+
+/* ---------- CLUE SELECTION ----------
+   The hard part of 3D Minesweeper isn't reading a number, it's working out
+   which eight blocks it's talking about when three of them are buried under
+   your viewing angle. Tapping a number lights its unresolved neighbours. */
+
+function toggleSelection(id) {
+  if (view.selectedId === id) return clearSelection();
+
+  clearSelection();
+  view.selectedId = id;
+
+  for (const nid of state.blocks[id].neighbors) {
+    const neighbour = state.blocks[nid];
+    if (neighbour.cleared || neighbour.triggered) continue;  // already known
+    const mesh = view.meshById.get(nid);
+    if (mesh) mesh.material = view.highlightMaterial;
+  }
+
+  const sprite = view.labels.get(id);
+  if (sprite) sprite.scale.setScalar(VIEW.LABEL_SCALE * VIEW.SELECT_GROW);
+}
+
+function clearSelection() {
+  if (view.selectedId === null) return;
+
+  for (const nid of state.blocks[view.selectedId].neighbors) {
+    const mesh = view.meshById.get(nid);
+    if (!mesh) continue;
+    const neighbour = state.blocks[nid];
+    mesh.material = neighbour.triggered
+      ? view.mineMaterial
+      : view.layerMaterials[neighbour.layer];
+  }
+
+  const sprite = view.labels.get(view.selectedId);
+  if (sprite) sprite.scale.setScalar(VIEW.LABEL_SCALE);
+
+  view.selectedId = null;
 }
 
 /* Slides every number to the mouth of whichever opening currently faces the
@@ -627,32 +810,47 @@ function addLabel(block) {
    surrounding blocks slice it in half. The label rides the inset surface of
    the gap it belongs to, so it stays inside its own hole and gets correctly
    occluded when you orbit round to the far side. */
-const labelDir = new THREE.Vector3();
+const markerDir = new THREE.Vector3();
 
-function positionLabels() {
+function placeMarker(sprite, block, boundX, boundZ) {
+  markerDir.set(
+    view.camera.position.x - block.x,
+    0,
+    view.camera.position.z - block.z,
+  );
+
+  // Scale the direction until the first axis hits its bound - that axis is
+  // the face the camera is looking through.
+  const tx = Math.abs(markerDir.x) > 1e-6 ? boundX / Math.abs(markerDir.x) : Infinity;
+  const tz = Math.abs(markerDir.z) > 1e-6 ? boundZ / Math.abs(markerDir.z) : Infinity;
+  const t = Math.min(tx, tz);
+
+  sprite.position.set(
+    block.x + markerDir.x * t,
+    block.y,
+    block.z + markerDir.z * t,
+  );
+}
+
+/* Flags ride the tower's outer silhouette, not their own block's face.
+   Layers alternate, so the blocks above and below a given block stick out
+   further than it does - a marker on its own face sits in a trench and gets
+   sliced by its neighbours. Numbers don't have this problem: they're inside
+   a gap, which is exactly where they belong. */
+const FLAG_ENVELOPE = CONFIG.BLOCK.length / 2 + VIEW.FLAG_PROUD;
+
+function positionMarkers() {
   for (const [id, sprite] of view.labels) {
     const block = state.blocks[id];
-
-    labelDir.set(
-      view.camera.position.x - block.x,
-      0,
-      view.camera.position.z - block.z,
+    placeMarker(
+      sprite, block,
+      Math.max(block.size.x / 2 - VIEW.LABEL_INSET, 0.01),
+      Math.max(block.size.z / 2 - VIEW.LABEL_INSET, 0.01),
     );
+  }
 
-    const insetX = Math.max(block.size.x / 2 - VIEW.LABEL_INSET, 0.01);
-    const insetZ = Math.max(block.size.z / 2 - VIEW.LABEL_INSET, 0.01);
-
-    // Scale the direction until the first axis hits its inset bound - that
-    // axis is the face the camera is looking through.
-    const tx = Math.abs(labelDir.x) > 1e-6 ? insetX / Math.abs(labelDir.x) : Infinity;
-    const tz = Math.abs(labelDir.z) > 1e-6 ? insetZ / Math.abs(labelDir.z) : Infinity;
-    const t = Math.min(tx, tz);
-
-    sprite.position.set(
-      block.x + labelDir.x * t,
-      block.y,
-      block.z + labelDir.z * t,
-    );
+  for (const [id, sprite] of view.flags) {
+    placeMarker(sprite, state.blocks[id], FLAG_ENVELOPE, FLAG_ENVELOPE);
   }
 }
 
@@ -678,6 +876,8 @@ function refreshLabels() {
 
 /* Tears the whole tower down ahead of a restart. */
 function disposeTower3D() {
+  clearSelection();
+
   for (const mesh of view.meshById.values()) {
     view.scene.remove(mesh);
     mesh.geometry.dispose();
@@ -687,6 +887,7 @@ function disposeTower3D() {
   view.meshes.length = 0;
 
   for (const id of [...view.labels.keys()]) removeLabel(id);
+  for (const id of [...view.flags.keys()]) removeFlag(id);
 }
 
 function logBlock(block) {
@@ -1018,6 +1219,7 @@ const api = {
   ui, initUI, updateHUD, loseHeart, endGame, showModal, hideModal,
   watchAd, grantRevive, setHardMode, restartGame, disposeTower3D,
   layerColor, addLabel, removeLabel, refreshLabels,
+  toggleFlag, addFlag, removeFlag, toggleSelection, clearSelection, pick,
   ADS, initPWA, initAds, prepareRewardedAd, simulateAd,
   initHelp, showHelp, hideHelp, showHint, hideHint,
 };

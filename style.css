@@ -280,6 +280,14 @@ body.damage #progress-fill { background: var(--danger); }
 
 .step-body b { color: var(--ink); font-weight: 700; }
 
+.step-tip {
+  margin-top: 6px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: #f5f0f7;
+  font-size: 12.5px !important;
+}
+
 /* The 3x3 grid is an exact projection, not a simplification: 3 blocks above
    + 2 beside + 3 below is genuinely 8 neighbours. */
 .help-diagram {

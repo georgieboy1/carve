@@ -3,7 +3,7 @@
 A cute 3D Jenga-Minesweeper puzzle for mobile. Pull the safe blocks, leave
 the mines standing. Built by **KG Studio**.
 
-12 layers × 3 blocks, alternating orientation, 10 hidden mines. Each block
+12 layers × 3 blocks, alternating orientation, 7 hidden mines. Each block
 knows how many of its neighbours are mines — clear one and the number
 appears in the gap it leaves behind.
 
@@ -13,8 +13,11 @@ appears in the gap it leaves behind.
 - The number left in the gap counts the mines touching that block —
   **including the layers above and below it**, so up to 8. This is the bit
   that trips up Minesweeper players, who expect a flat 2D ring.
+- **Tap a number** to light up the blocks it's counting.
+- **Press and hold** a block to flag it. Flagged blocks are locked, so a
+  mis-tap can't cost you a heart. Hold again to unflag.
 - A mine costs a heart and stays red where it is. Three mines ends the run.
-- Clear all 26 safe blocks to win; the bar at the top counts down.
+- Clear all 29 safe blocks to win; the bar at the top counts down.
 
 In-game, this lives in a first-run card, reopenable any time via the **?**
 button in the HUD.
@@ -47,7 +50,7 @@ Everything worth adjusting lives in `CONFIG` at the top of `game.js`:
 
 | Key | Default | Notes |
 |---|---|---|
-| `MINE_COUNT` | `10` | Out of 36 blocks. See the density note in `blueprint.md` |
+| `MINE_COUNT` | `7` | Out of 36 blocks = 19%, Minesweeper Expert density. Raising it past ~8 removes the zeros that deduction needs — see `blueprint.md` |
 | `START_HEARTS` | `3` | |
 | `MAX_REVIVES` | `1` | Ad-revives per game. `0` disables the reward loop |
 | `AD_SECONDS` | `3` | Simulated ad length |
