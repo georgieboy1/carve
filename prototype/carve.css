@@ -54,6 +54,32 @@ body {
   margin-bottom: 9px;
 }
 
+/* Half stars are a gradient clipped to the glyph — a real half, not two
+   images that have to stay in sync. */
+#stars { display: flex; gap: 1px; font-size: 14px; line-height: 1; margin-right: auto; }
+#banner-stars { font-size: 26px; letter-spacing: 2px; margin: 2px 0 8px; }
+
+.star { color: #e8dce3; }
+.star.full { color: #f0b73f; }
+
+.star.half {
+  background: linear-gradient(90deg, #f0b73f 50%, #e8dce3 50%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.zen-tag {
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: #e2f1ec;
+  color: #4f8d7d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
 #level-tag { display: flex; align-items: center; gap: 8px; }
 
 #level-name {
@@ -161,6 +187,59 @@ a.pill { text-decoration: none; display: inline-block; }
 #clue-btn[data-mode="chips"] { color: #4a3b49; }
 #clue-btn[data-mode="ghost"] { color: #9c8a97; }
 #clue-btn[data-mode="off"]   { color: #c9b6c4; text-decoration: line-through; }
+
+#sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(74,59,73,.34);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+#sheet[hidden] { display: none; }
+
+#sheet-card {
+  width: 100%;
+  padding: 20px 18px calc(18px + env(safe-area-inset-bottom));
+  border-radius: 24px 24px 0 0;
+  background: var(--card);
+  box-shadow: 0 -12px 40px rgba(74,59,73,.22);
+  animation: sheet-up .34s cubic-bezier(.22,1,.36,1) both;
+}
+
+@keyframes sheet-up { from { transform: translateY(100%) } to { transform: translateY(0) } }
+
+#sheet-card h3 {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 13px 14px;
+  margin-bottom: 8px;
+  border: 0;
+  border-radius: 14px;
+  background: #f6eff4;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.row b { color: var(--mint); text-transform: capitalize; }
+.row:active { transform: scale(.985); }
 
 #toast {
   position: fixed;

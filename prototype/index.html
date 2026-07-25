@@ -11,6 +11,7 @@
   <header id="hud">
     <div id="hud-top">
       <div id="hearts"></div>
+      <div id="stars" aria-label="Stars remaining"></div>
       <div id="level-tag">
         <span id="level-name">–</span>
         <span id="pips" aria-hidden="true"></span>
@@ -36,15 +37,28 @@
        different things is the wrong call for a working-memory problem. -->
   <div id="controls">
     <a id="gallery-link" class="pill" href="gallery.html">Collection</a>
-    <button id="clue-btn" class="pill" type="button">Clues</button>
-    <button id="glyph-btn" class="pill" type="button">Shown as</button>
+    <button id="display-btn" class="pill" type="button">Display</button>
+    <button id="mode-btn" class="pill" type="button">Mode</button>
     <button id="hint-btn" class="pill" type="button">Hint</button>
+  </div>
+
+  <!-- Two display settings that used to sit as permanent pills. They are
+       changed rarely, so they live behind one control instead of eating the
+       thumb zone every second of play. -->
+  <div id="sheet" hidden>
+    <div id="sheet-card" role="dialog" aria-modal="true" aria-label="Display settings">
+      <h3>Display</h3>
+      <button id="clue-btn" class="row" type="button"><span>Clues</span><b>Chips</b></button>
+      <button id="glyph-btn" class="row" type="button"><span>Shown as</span><b>Numbers</b></button>
+      <button id="sheet-close" class="btn btn-ghost" type="button">Done</button>
+    </div>
   </div>
 
   <div id="banner" hidden>
     <div id="banner-card">
       <div id="banner-emoji">✨</div>
       <h2 id="banner-title">Pyramid revealed</h2>
+      <div id="banner-stars" hidden></div>
       <p id="banner-body"></p>
       <button id="ad-btn" class="btn" type="button" hidden></button>
       <button id="again" class="btn" type="button">Next in pack</button>

@@ -49,6 +49,15 @@ function writeSave() {
 
 const owns = (pack) => pack.free || save.owned.includes(pack.id);
 
+function starMarkup(stars) {
+  let out = '';
+  for (let i = 1; i <= 3; i++) {
+    const cls = stars >= i ? 'star full' : stars >= i - 0.5 ? 'star half' : 'star';
+    out += `<span class="${cls}">&#9733;</span>`;
+  }
+  return out;
+}
+
 /* ---------- scene ---------- */
 
 const canvas = document.getElementById('view');
@@ -178,8 +187,14 @@ function buildOverlay(cellW, cellH) {
     el.style.height = `${cellH}px`;
 
     const locked = !owns(tile.pack);
+    const stars = tile.best?.stars ?? 0;
+
+    /* A Zen finish shows the sculpture but no stars, so the shelf stays an
+       honest record and there is still a reason to come back to it. */
     el.innerHTML = tile.done
-      ? `<b>${tile.name}</b><span class="hearts">${'&hearts;'.repeat(tile.best.hearts || 0)}</span>`
+      ? `<b>${tile.name}</b><span class="score">${
+        tile.best.mode === 'zen' && !stars ? '<i class="zen">zen</i>' : starMarkup(stars)
+      }</span>`
       : `<b style="color:#c2b0bd">${locked ? '&#8226; &#8226; &#8226;' : tile.name}</b>
          <span class="todo">${locked ? 'locked' : 'not carved'}</span>`;
 

@@ -70,6 +70,7 @@ const blankSave = () => ({
   owned: PACKS.filter((p) => p.free).map((p) => p.id),
   clueMode: 'chips',
   glyphs: 'numbers',     // numbers | letters | shapes
+  mode: 'scored',        // scored | zen
 });
 
 function readSave() {
@@ -108,12 +109,42 @@ function writeSave() {
   }
 }
 
-function recordWin(name, hearts, hints) {
-  const prev = save.best[name];
-  if (!prev || hearts > prev.hearts) {
-    save.best[name] = { hearts, hints, at: Date.now() };
+/* ---------- SCORING ----------
+   Three stars, minus one per error, minus a half per hint.
+
+   The ceiling falls out of the hearts: a run that survives can hold at most
+   two errors, so errors alone give 3 / 2 / 1 and hints fill in the halves.
+   A revived run has already spent three errors and scores zero — which is
+   the property worth protecting. An ad can buy you the reveal. It can never
+   buy you the stars. */
+const isZen = () => state.mode === 'zen';
+
+function starsFor(errors, hints) {
+  return Math.max(0, Math.min(3, 3 - errors - hints * 0.5));
+}
+
+const currentStars = () =>
+  (isZen() || state.unscored ? 0 : starsFor(state.errors, state.hintsUsed));
+
+function starMarkup(stars) {
+  let out = '';
+  for (let i = 1; i <= 3; i++) {
+    const cls = stars >= i ? 'star full' : stars >= i - 0.5 ? 'star half' : 'star';
+    out += `<span class="${cls}">&#9733;</span>`;
   }
-  writeSave();
+  return out;
+}
+
+/* A Zen finish still puts the sculpture on the shelf — the reveal is the
+   whole point of the game and withholding it would be mean. It records zero
+   stars, so the shelf keeps an honest record and there's a reason to come
+   back. It must never overwrite a scored result. */
+function recordWin(name, stars, errors, hints, mode) {
+  const prev = save.best[name];
+  if (!prev || stars > (prev.stars ?? -1)) {
+    save.best[name] = { stars, errors, hints, mode, at: Date.now() };
+    writeSave();
+  }
 }
 
 const completedCount = () => Object.keys(save.best).length;
@@ -157,8 +188,12 @@ const state = {
   status: 'playing',
   clueMode: save.clueMode,
   glyphs: save.glyphs || 'numbers',
+  mode: save.mode || 'scored',
   hintsLeft: CONFIG.HINTS,
   revivesUsed: 0,
+  errors: 0,             // keepers struck this attempt
+  hintsUsed: 0,
+  unscored: false,       // set the moment an attempt touches Zen
 };
 
 const view = {
@@ -219,6 +254,9 @@ function buildLevel() {
   state.hearts = CONFIG.START_HEARTS;
   state.status = 'playing';
   state.revivesUsed = 0;
+  state.errors = 0;
+  state.hintsUsed = 0;
+  state.unscored = isZen();   // a fresh attempt in Zen is unscored from the off
 }
 
 /* THE AUTHORING CONSTRAINT — the rule the player never has to think about.
@@ -669,6 +707,26 @@ function refreshClues() {
   view.labels.forEach(styleLabel);
 }
 
+/* Switching into Zen taints the current attempt for good. Without that you
+   could carve in Zen until the shape was obvious, flip back and claim three
+   stars. Retrying the level clears it — the penalty is on the attempt, not
+   on the player. */
+function toggleMode() {
+  state.mode = isZen() ? 'scored' : 'zen';
+  save.mode = state.mode;
+  writeSave();
+
+  if (isZen()) {
+    state.unscored = true;
+    state.hearts = CONFIG.START_HEARTS;   // nothing to fail out of in Zen
+  }
+
+  updateHUD();
+  toast(isZen()
+    ? 'Zen — no limits, no stars'
+    : (state.unscored ? 'Scored — this attempt still unscored' : 'Scored — 3 stars to lose'));
+}
+
 function cycleGlyphs() {
   const order = ['numbers', 'letters', 'shapes'];
   state.glyphs = order[(order.indexOf(state.glyphs) + 1) % order.length];
@@ -705,9 +763,20 @@ function carve(cellKey) {
     if (mesh) mesh.material = view.keeperMaterial;
     view.meshes.splice(view.meshes.indexOf(mesh), 1);
     navigator.vibrate?.(60);
-    state.hearts = Math.max(0, state.hearts - 1);
+    state.errors++;
+
+    // Zen keeps the information — you still learn this cube is sculpture —
+    // and drops the punishment. There is no way to fail a Zen carve.
+    if (!isZen()) {
+      state.hearts = Math.max(0, state.hearts - 1);
+      refreshClues();
+      updateHUD();
+      if (state.hearts === 0) finish('lost');
+      return;
+    }
+
+    refreshClues();
     updateHUD();
-    if (state.hearts === 0) finish('lost');
     return;
   }
 
@@ -763,16 +832,33 @@ function finish(result) {
   const setDone = won && stepIn(levelIndex) === pack.shapes.length - 1;
   const canRevive = !won && state.revivesUsed < CONFIG.MAX_REVIVES;
 
-  if (won) recordWin(SHAPE.name, state.hearts, state.hintsLeft);
+  const stars = currentStars();
+  if (won) {
+    recordWin(SHAPE.name, stars, state.errors, state.hintsUsed,
+      state.unscored ? 'zen' : 'scored');
+  }
 
   ui.bannerEmoji.textContent = won ? (setDone ? '🏛️' : '✨') : '💔';
   ui.bannerTitle.textContent = won
     ? (setDone ? `${pack.name} complete` : `${SHAPE.name} revealed`)
     : 'Out of hearts';
-  ui.bannerBody.textContent = won
-    ? `Carved all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left. `
-      + `${completedCount()} of ${LEVELS.length} sculptures collected.`
-    : `${state.wasteTotal - state.wasteLeft} of ${state.wasteTotal} carved before the chisel slipped.`;
+  if (won) {
+    const tally = [];
+    if (state.errors) tally.push(`${state.errors} slip${state.errors > 1 ? 's' : ''}`);
+    if (state.hintsUsed) tally.push(`${state.hintsUsed} hint${state.hintsUsed > 1 ? 's' : ''}`);
+
+    ui.bannerStars.hidden = false;
+    ui.bannerStars.innerHTML = starMarkup(stars);
+    ui.bannerBody.textContent = state.unscored
+      ? `Carved in Zen — no stars, but it's on the shelf. ${completedCount()} of ${LEVELS.length} collected.`
+      : (tally.length
+        ? `${tally.join(' and ')}. ${completedCount()} of ${LEVELS.length} collected.`
+        : `Flawless. ${completedCount()} of ${LEVELS.length} collected.`);
+  } else {
+    ui.bannerStars.hidden = true;
+    ui.bannerBody.textContent =
+      `${state.wasteTotal - state.wasteLeft} of ${state.wasteTotal} carved before the chisel slipped.`;
+  }
 
   ui.adBtn.hidden = !canRevive;
   if (canRevive) { resetAdButton(); prepareRewardedAd(); }
@@ -817,12 +903,15 @@ function findHint() {
 }
 
 function useHint() {
-  if (state.hintsLeft <= 0 || state.status !== 'playing') return;
+  if (state.status !== 'playing') return;
+  if (!isZen() && state.hintsLeft <= 0) return;
 
   const hint = findHint();
   if (!hint) return toast('No certain move — try a different angle');
 
-  state.hintsLeft--;
+  // Zen hands out hints freely; in a scored run each one costs half a star.
+  if (!isZen()) state.hintsLeft--;
+  state.hintsUsed++;
   updateHUD();
 
   const mesh = view.meshByKey.get(hint.cell.key);
@@ -912,11 +1001,20 @@ function updateHUD() {
   ui.left.textContent = state.wasteLeft;
   ui.fill.style.width = `${(state.wasteLeft / state.wasteTotal) * 100}%`;
 
-  let markup = '';
-  for (let i = 0; i < CONFIG.START_HEARTS; i++) {
-    markup += `<span class="heart${i < state.hearts ? '' : ' spent'}">&hearts;</span>`;
+  // Zen has no fail state, so hearts would be a lie. It shows the stakes
+  // it actually has: none.
+  if (isZen()) {
+    ui.hearts.innerHTML = '<span class="zen-tag">Zen</span>';
+  } else {
+    let markup = '';
+    for (let i = 0; i < CONFIG.START_HEARTS; i++) {
+      markup += `<span class="heart${i < state.hearts ? '' : ' spent'}">&hearts;</span>`;
+    }
+    ui.hearts.innerHTML = markup;
   }
-  ui.hearts.innerHTML = markup;
+
+  ui.stars.innerHTML = state.unscored ? '' : starMarkup(currentStars());
+  ui.modeBtn.textContent = isZen() ? 'Mode · Zen' : 'Mode · Scored';
 
   // Spelled out rather than iconographic on purpose: an icon that means
   // three different things is exactly the wrong call for a game that's
@@ -932,11 +1030,10 @@ function updateHUD() {
   }
   ui.pips.innerHTML = pips;
 
-  ui.clueBtn.textContent = `Clues · ${state.clueMode}`;
-  ui.clueBtn.dataset.mode = state.clueMode;
-  ui.glyphBtn.textContent = `Shown as · ${state.glyphs}`;
-  ui.hintBtn.textContent = `Hint · ${state.hintsLeft}`;
-  ui.hintBtn.disabled = state.hintsLeft <= 0;
+  ui.clueBtn.querySelector('b').textContent = state.clueMode;
+  ui.glyphBtn.querySelector('b').textContent = state.glyphs;
+  ui.hintBtn.textContent = isZen() ? 'Hint · ∞' : `Hint · ${state.hintsLeft}`;
+  ui.hintBtn.disabled = !isZen() && state.hintsLeft <= 0;
 }
 
 let toastTimer = null;
@@ -1085,11 +1182,25 @@ ui.again = document.getElementById('again');
 ui.pick = document.getElementById('pick');
 ui.adBtn = document.getElementById('ad-btn');
 ui.glyphBtn = document.getElementById('glyph-btn');
+ui.modeBtn = document.getElementById('mode-btn');
+ui.stars = document.getElementById('stars');
+ui.bannerStars = document.getElementById('banner-stars');
 
 ui.adBtn.addEventListener('click', watchAd);
 ui.clueBtn.addEventListener('click', cycleClueMode);
 ui.glyphBtn.addEventListener('click', cycleGlyphs);
+ui.modeBtn.addEventListener('click', toggleMode);
 ui.hintBtn.addEventListener('click', useHint);
+
+ui.sheet = document.getElementById('sheet');
+const closeSheet = () => { ui.sheet.hidden = true; };
+document.getElementById('display-btn')
+  .addEventListener('click', () => { ui.sheet.hidden = false; });
+document.getElementById('sheet-close').addEventListener('click', closeSheet);
+ui.sheet.addEventListener('click', (e) => { if (e.target === ui.sheet) closeSheet(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !ui.sheet.hidden) closeSheet();
+});
 
 /* The collection is the level select, so it hands the chosen level back
    through the URL. loadLevel() re-checks ownership before honouring it. */
@@ -1115,7 +1226,7 @@ window.Carve = {
   carve, toggleMark, pick, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
-  cycleGlyphs, ownsPack, canPlay, packOf,
+  cycleGlyphs, toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
   get levelIndex() { return levelIndex; },
