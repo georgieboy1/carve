@@ -69,6 +69,22 @@ that is in the repo yet.
 
 ## Deploying
 
-The app is fully static — any host works. For GitHub Pages, push to a
-public repo and enable Pages on the default branch. All paths are relative,
-so serving from `/<repo>/` works without changes.
+The app is fully static — any host works. All paths are relative, so
+serving from `/<repo>/` needs no changes.
+
+It's committed locally on `main` but **not published yet**. When you're
+ready, create an empty repo named `jenga-sweeper` at
+<https://github.com/new> (no README, no `.gitignore`, no licence — an
+initial commit on their side will collide with ours), then:
+
+```bash
+git remote add origin https://github.com/kacygeorge/jenga-sweeper.git
+git push -u origin main
+```
+
+Then turn on Pages: **Settings → Pages → Source: Deploy from a branch →
+`main` / `(root)`**. The site goes live at
+`https://kacygeorge.github.io/jenga-sweeper/` a minute or so later.
+
+Note that a public repo plus Pages means both the code and the game are
+publicly visible and indexable by search engines.
