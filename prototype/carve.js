@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js';
 
 const CONFIG = {
   GRID: null,        // set per shape
@@ -32,58 +33,16 @@ const CONFIG = {
   TAP_TIME: 400,
 };
 
-/* Three shapes to feel the difference. Note the proportions: a phone is a
-   tall thin window, so a squat mass leaves the screen half empty. Portrait
-   wants shapes that are taller than they are wide. */
-const SHAPES = [
-  /* ---- Set 1: First cuts ---- */
-  { name: 'Pillar',               // tiny, teaches the verbs
-    grid: { x: 3, y: 3, z: 3 },
-    keeps: (x, y, z) => y === 0 || (x === 1 && z === 1) },
-
-  { name: 'Arch',                 // two legs and a span
-    grid: { x: 5, y: 4, z: 3 },
-    keeps: (x, y, z) => y === 3 || x === 0 || x === 4 },
-
-  { name: 'Obelisk',              // tall - reads best in portrait
-    grid: { x: 3, y: 6, z: 3 },
-    keeps: (x, y, z) => y <= 1 || (x === 1 && z === 1) },
-
-  /* ---- Set 2: Stonework ---- */
-  { name: 'Gateway',              // a doorway with a thick lintel
-    grid: { x: 5, y: 5, z: 3 },
-    keeps: (x, y, z) => y >= 3 || x === 0 || x === 4 },
-
-  /* The starting MASS is a level-design variable too, not just the shape
-     hidden inside it. A perfect cuboid is the most digital-looking option
-     available; a rough boulder sells "sculpting" instead of "deleting", and
-     its silhouette leaks a little information for free. */
-  { name: 'Spire in stone',
-    grid: { x: 4, y: 6, z: 4 },
-    mass: (x, y, z) => {
-      const dx = x - 1.5, dz = z - 1.5;
-      const r = 2.1 - Math.abs(y - 2.5) * 0.18;   // bulges at the waist
-      return dx * dx + dz * dz <= r * r;
-    },
-    keeps: (x, y, z) => y <= 1 || (x >= 1 && x <= 2 && z >= 1 && z <= 2) },
-
-  { name: 'Keep',                 // hollow tower with corner merlons
-    grid: { x: 4, y: 7, z: 4 },
-    keeps: (x, y, z) =>
-      y <= 1
-      || (y <= 5 && (x === 0 || x === 3 || z === 0 || z === 3))
-      || (y === 6 && (x === 0 || x === 3) && (z === 0 || z === 3)) },
-];
-
-/* Three levels to a set, and the third is always the biggest — so a set is
-   a short arc with a payoff rather than a flat list. Progress shows as
-   three blocks that fill in, which is also the unit of "one more go". */
-const PER_SET = 3;
-const SET_NAMES = ['First cuts', 'Stonework'];
+/* Levels, their order and their grouping all come from shapes.js now. One
+   library, shared by the game, the catalogue and the gallery — a level that
+   validates in CI is the same level that ships. */
+const packOf = (i) => PACKS.find((p) => p.id === LEVELS[i].pack);
+const packStart = (i) => LEVELS.findIndex((l) => l.pack === LEVELS[i].pack);
+const stepIn = (i) => i - packStart(i);
 
 /* Derived, so adding a taller level can't silently leave its top row with
    no material. Hand-maintaining this number cost the Keep a white roof. */
-CONFIG.MAX_Y = Math.max(...SHAPES.map((s) => s.grid.y));
+CONFIG.MAX_Y = Math.max(...LEVELS.map((s) => parse(s).grid.y));
 
 /* ---------- SAVE ----------
    One versioned record instead of loose keys, because progress is about to
@@ -174,11 +133,8 @@ function importSave(code) {
   }
 }
 
-let levelIndex = Math.min(Math.max(save.level | 0, 0), SHAPES.length - 1);
-let SHAPE = SHAPES[levelIndex];
-
-const setOf = (i) => Math.floor(i / PER_SET);
-const stepIn = (i) => i % PER_SET;
+let levelIndex = Math.min(Math.max(save.level | 0, 0), LEVELS.length - 1);
+let SHAPE = LEVELS[levelIndex];
 
 const PALETTE = ['#f7c3d5', '#dfc9f2', '#c3e5f1', '#c7efdf'];
 const DIGIT_COLORS = ['#b0a3ad', '#4faa96', '#4295c9', '#7377cf',
@@ -213,28 +169,28 @@ const key = (x, y, z) => `${x},${y},${z}`;
 const OFFSETS = [[1,0,0], [-1,0,0], [0,1,0], [0,-1,0], [0,0,1], [0,0,-1]];
 
 function buildLevel() {
-  CONFIG.GRID = SHAPE.grid;
-  const { x: X, y: Y, z: Z } = CONFIG.GRID;
+  // The text map decides everything: which cells exist at all (the mass)
+  // and which of those are the sculpture.
+  const { cells: keepers, mass, grid } = parse(SHAPE);
+  CONFIG.GRID = grid;
+
   state.cells = [];
   state.byKey.clear();
 
-  // A cell only exists where the mass exists. Shapes without a `mass` are
-  // solid cuboids, which is just the special case where everything exists.
-  const inMass = SHAPE.mass || (() => true);
-
-  for (let y = 0; y < Y; y++) {
-    for (let z = 0; z < Z; z++) {
-      for (let x = 0; x < X; x++) {
-        if (!inMass(x, y, z)) continue;
+  for (let y = 0; y < grid.y; y++) {
+    for (let z = 0; z < grid.z; z++) {
+      for (let x = 0; x < grid.x; x++) {
+        const k = key(x, y, z);
+        if (!mass.has(k)) continue;
 
         const cell = {
-          x, y, z, key: key(x, y, z),
-          keeper: !!SHAPE.keeps(x, y, z),
+          x, y, z, key: k,
+          keeper: keepers.has(k),
           carved: false, marked: false, struck: false,
           near: 0,
         };
         state.cells.push(cell);
-        state.byKey.set(cell.key, cell);
+        state.byKey.set(k, cell);
       }
     }
   }
@@ -681,25 +637,26 @@ function finish(result) {
   }
 
   const won = result === 'won';
-  const setDone = won && stepIn(levelIndex) === PER_SET - 1;
+  const pack = packOf(levelIndex);
+  const setDone = won && stepIn(levelIndex) === pack.shapes.length - 1;
   const canRevive = !won && state.revivesUsed < CONFIG.MAX_REVIVES;
 
   if (won) recordWin(SHAPE.name, state.hearts, state.hintsLeft);
 
   ui.bannerEmoji.textContent = won ? (setDone ? '🏛️' : '✨') : '💔';
   ui.bannerTitle.textContent = won
-    ? (setDone ? `${SET_NAMES[setOf(levelIndex)] || 'Set'} complete` : `${SHAPE.name} revealed`)
+    ? (setDone ? `${pack.name} complete` : `${SHAPE.name} revealed`)
     : 'Out of hearts';
   ui.bannerBody.textContent = won
     ? `Carved all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left. `
-      + `${completedCount()} of ${SHAPES.length} sculptures collected.`
+      + `${completedCount()} of ${LEVELS.length} sculptures collected.`
     : `${state.wasteTotal - state.wasteLeft} of ${state.wasteTotal} carved before the chisel slipped.`;
 
   ui.adBtn.hidden = !canRevive;
   if (canRevive) { resetAdButton(); prepareRewardedAd(); }
 
   ui.again.textContent = won
-    ? (levelIndex === SHAPES.length - 1 ? 'Start over' : 'Next level')
+    ? (levelIndex === LEVELS.length - 1 ? 'Start over' : 'Next level')
     : 'Try again';
   ui.again.onclick = won ? nextLevel : retryLevel;
 
@@ -833,12 +790,11 @@ function updateHUD() {
   // Spelled out rather than iconographic on purpose: an icon that means
   // three different things is exactly the wrong call for a game that's
   // already asking a lot of working memory.
-  const set = setOf(levelIndex);
-  ui.levelName.textContent =
-    `${SET_NAMES[set] || `Set ${set + 1}`} · ${SHAPE.name}`;
+  const pack = packOf(levelIndex);
+  ui.levelName.textContent = `${pack.name} · ${SHAPE.name}`;
 
   let pips = '';
-  for (let i = 0; i < PER_SET; i++) {
+  for (let i = 0; i < pack.shapes.length; i++) {
     const cls = i < stepIn(levelIndex) ? 'done'
       : i === stepIn(levelIndex) ? 'current' : '';
     pips += `<span class="pip ${cls}"></span>`;
@@ -861,8 +817,8 @@ function toast(message) {
 }
 
 function loadLevel(index) {
-  levelIndex = THREE.MathUtils.clamp(index, 0, SHAPES.length - 1);
-  SHAPE = SHAPES[levelIndex];
+  levelIndex = THREE.MathUtils.clamp(index, 0, LEVELS.length - 1);
+  SHAPE = LEVELS[levelIndex];
   save.level = levelIndex;
   writeSave();
 
@@ -878,7 +834,7 @@ function loadLevel(index) {
   updateHUD();
 }
 
-const nextLevel = () => loadLevel((levelIndex + 1) % SHAPES.length);
+const nextLevel = () => loadLevel((levelIndex + 1) % LEVELS.length);
 const retryLevel = () => loadLevel(levelIndex);
 
 /* Kept as an alias: the prototype's dev console and the banner button both
@@ -996,7 +952,7 @@ initAds();
 updateHUD();
 
 window.Carve = {
-  CONFIG, SHAPES, state, view,
+  CONFIG, LEVELS, PACKS, state, view,
   carve, toggleMark, pick, restart, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextLevel, retryLevel, watchAd, grantRevive, ADS,

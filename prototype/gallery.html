@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fdf3f8">
+  <title>Carve — collection — KG Studio</title>
+  <link rel="stylesheet" href="carve.css">
+  <style>
+    body { display: block; overflow-y: auto; height: auto; min-height: 100dvh; padding-bottom: 40px; }
+
+    #top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px 4px;
+    }
+
+    #top h1 { font-size: 19px; font-weight: 800; letter-spacing: -.01em; }
+
+    #tally {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
+    }
+
+    #back {
+      display: block;
+      margin: 6px 18px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--mint);
+      text-decoration: none;
+    }
+
+    #wrap { position: relative; margin: 0 12px; }
+    canvas { display: block; width: 100%; }
+
+    #overlay { position: absolute; inset: 0; }
+
+    .pack-head {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .pack-head b {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: #a1889c;
+    }
+
+    .pack-head .lock {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      color: var(--ink-soft);
+    }
+
+    .pack-head button {
+      border: 0;
+      border-radius: 99px;
+      padding: 5px 11px;
+      background: var(--mint);
+      color: #fff;
+      font: inherit;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .tile {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      pointer-events: none;
+      text-align: center;
+    }
+
+    .tile b { font-size: 11.5px; font-weight: 700; }
+    .tile .hearts { font-size: 10px; color: var(--rose); letter-spacing: 1px; }
+    .tile .todo { font-size: 9.5px; font-weight: 600; letter-spacing: .08em;
+                  text-transform: uppercase; color: #c2b0bd; }
+  </style>
+</head>
+<body>
+  <div id="top">
+    <h1>Collection</h1>
+    <span id="tally">–</span>
+  </div>
+  <a id="back" href="./">&larr; Back to carving</a>
+
+  <div id="wrap">
+    <canvas id="view"></canvas>
+    <div id="overlay"></div>
+  </div>
+
+  <footer id="brand" style="grid-row:auto;margin-top:18px"><b>KG</b> STUDIO</footer>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="gallery.js"></script>
+</body>
+</html>

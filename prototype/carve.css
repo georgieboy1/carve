@@ -152,6 +152,7 @@ body {
   transition: transform .12s ease, opacity .2s ease, color .2s ease;
 }
 
+a.pill { text-decoration: none; display: inline-block; }
 .pill:active { transform: scale(.94); }
 .pill:disabled { opacity: .45; cursor: default; }
 .pill:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
