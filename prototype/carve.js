@@ -44,6 +44,21 @@ const SHAPES = [
   { name: 'Pyramid',              // 5x3x5 - squat, wastes vertical space
     grid: { x: 5, y: 3, z: 5 },
     keeps: (x, y, z) => x >= y && x < 5 - y && z >= y && z < 5 - y },
+
+  /* The starting MASS is a level-design variable too, not just the shape
+     hidden inside it. A perfect cuboid is the most digital-looking option
+     available; a rough boulder sells "sculpting" instead of "deleting", and
+     its silhouette leaks a little information for free. */
+  { name: 'Spire in stone',
+    grid: { x: 5, y: 6, z: 5 },
+    mass: (x, y, z) => {
+      const dx = x - 2, dz = z - 2;
+      const r = 2.6 - Math.abs(y - 2) * 0.2;    // bulges at the waist
+      return dx * dx + dz * dz <= r * r;
+    },
+    keeps: (x, y, z) =>
+      (y <= 1 && Math.max(Math.abs(x - 2), Math.abs(z - 2)) <= 1)
+      || (x === 2 && z === 2) },
 ];
 
 let shapeIndex = 0;
@@ -84,9 +99,15 @@ function buildLevel() {
   state.cells = [];
   state.byKey.clear();
 
+  // A cell only exists where the mass exists. Shapes without a `mass` are
+  // solid cuboids, which is just the special case where everything exists.
+  const inMass = SHAPE.mass || (() => true);
+
   for (let y = 0; y < Y; y++) {
     for (let z = 0; z < Z; z++) {
       for (let x = 0; x < X; x++) {
+        if (!inMass(x, y, z)) continue;
+
         const cell = {
           x, y, z, key: key(x, y, z),
           keeper: !!SHAPE.keeps(x, y, z),
