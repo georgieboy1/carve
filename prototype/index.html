@@ -9,7 +9,14 @@
 </head>
 <body>
   <header id="hud">
-    <div id="hearts"></div>
+    <div id="hud-top">
+      <div id="hearts"></div>
+      <div id="level-tag">
+        <span id="level-name">–</span>
+        <span id="pips" aria-hidden="true"></span>
+      </div>
+    </div>
+
     <div id="progress">
       <div id="progress-label">
         <span>Blocks to carve</span>
@@ -37,7 +44,8 @@
       <div id="banner-emoji">✨</div>
       <h2 id="banner-title">Pyramid revealed</h2>
       <p id="banner-body"></p>
-      <button id="again" class="btn" type="button">Carve another</button>
+      <button id="ad-btn" class="btn" type="button" hidden></button>
+      <button id="again" class="btn btn-ghost" type="button">Next level</button>
     </div>
   </div>
 

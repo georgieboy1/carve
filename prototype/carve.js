@@ -20,11 +20,13 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const CONFIG = {
   GRID: null,        // set per shape
-  MAX_Y: 6,          // tallest grid any shape uses, for the colour ramp
+  MAX_Y: 0,          // derived from the level list below, not hand-maintained
   CUBE: 1,
   GAP: 0.07,
   START_HEARTS: 3,
-  HINTS: 3,          // once spent, this is the natural rewarded-ad slot
+  HINTS: 3,          // once spent, this is the natural second ad slot
+  MAX_REVIVES: 1,    // per level; unlimited would remove the fail state
+  AD_SECONDS: 3,
   LONG_PRESS: 480,
   TAP_SLOP: 10,
   TAP_TIME: 400,
@@ -34,36 +36,61 @@ const CONFIG = {
    tall thin window, so a squat mass leaves the screen half empty. Portrait
    wants shapes that are taller than they are wide. */
 const SHAPES = [
-  { name: 'Obelisk',              // 3x6x3 - reads best in portrait
-    grid: { x: 3, y: 6, z: 3 },
-    keeps: (x, y, z) => y <= 1 || (x === 1 && z === 1) },
+  /* ---- Set 1: First cuts ---- */
+  { name: 'Pillar',               // tiny, teaches the verbs
+    grid: { x: 3, y: 3, z: 3 },
+    keeps: (x, y, z) => y === 0 || (x === 1 && z === 1) },
 
-  { name: 'Arch',                 // 5x4x3 - two legs and a span
+  { name: 'Arch',                 // two legs and a span
     grid: { x: 5, y: 4, z: 3 },
     keeps: (x, y, z) => y === 3 || x === 0 || x === 4 },
 
-  { name: 'Pyramid',              // 5x3x5 - squat, wastes vertical space
-    grid: { x: 5, y: 3, z: 5 },
-    keeps: (x, y, z) => x >= y && x < 5 - y && z >= y && z < 5 - y },
+  { name: 'Obelisk',              // tall - reads best in portrait
+    grid: { x: 3, y: 6, z: 3 },
+    keeps: (x, y, z) => y <= 1 || (x === 1 && z === 1) },
+
+  /* ---- Set 2: Stonework ---- */
+  { name: 'Gateway',              // a doorway with a thick lintel
+    grid: { x: 5, y: 5, z: 3 },
+    keeps: (x, y, z) => y >= 3 || x === 0 || x === 4 },
 
   /* The starting MASS is a level-design variable too, not just the shape
      hidden inside it. A perfect cuboid is the most digital-looking option
      available; a rough boulder sells "sculpting" instead of "deleting", and
      its silhouette leaks a little information for free. */
   { name: 'Spire in stone',
-    grid: { x: 5, y: 6, z: 5 },
+    grid: { x: 4, y: 6, z: 4 },
     mass: (x, y, z) => {
-      const dx = x - 2, dz = z - 2;
-      const r = 2.6 - Math.abs(y - 2) * 0.2;    // bulges at the waist
+      const dx = x - 1.5, dz = z - 1.5;
+      const r = 2.1 - Math.abs(y - 2.5) * 0.18;   // bulges at the waist
       return dx * dx + dz * dz <= r * r;
     },
+    keeps: (x, y, z) => y <= 1 || (x >= 1 && x <= 2 && z >= 1 && z <= 2) },
+
+  { name: 'Keep',                 // hollow tower with corner merlons
+    grid: { x: 4, y: 7, z: 4 },
     keeps: (x, y, z) =>
-      (y <= 1 && Math.max(Math.abs(x - 2), Math.abs(z - 2)) <= 1)
-      || (x === 2 && z === 2) },
+      y <= 1
+      || (y <= 5 && (x === 0 || x === 3 || z === 0 || z === 3))
+      || (y === 6 && (x === 0 || x === 3) && (z === 0 || z === 3)) },
 ];
 
-let shapeIndex = 0;
-let SHAPE = SHAPES[0];
+/* Three levels to a set, and the third is always the biggest — so a set is
+   a short arc with a payoff rather than a flat list. Progress shows as
+   three blocks that fill in, which is also the unit of "one more go". */
+const PER_SET = 3;
+const SET_NAMES = ['First cuts', 'Stonework'];
+
+/* Derived, so adding a taller level can't silently leave its top row with
+   no material. Hand-maintaining this number cost the Keep a white roof. */
+CONFIG.MAX_Y = Math.max(...SHAPES.map((s) => s.grid.y));
+
+let levelIndex = Math.min(
+  Number(localStorage.getItem('carve.level') || 0), SHAPES.length - 1);
+let SHAPE = SHAPES[levelIndex];
+
+const setOf = (i) => Math.floor(i / PER_SET);
+const stepIn = (i) => i % PER_SET;
 
 const PALETTE = ['#f7c3d5', '#dfc9f2', '#c3e5f1', '#c7efdf'];
 const DIGIT_COLORS = ['#b0a3ad', '#4faa96', '#4295c9', '#7377cf',
@@ -76,6 +103,7 @@ const state = {
   status: 'playing',
   clueMode: localStorage.getItem('carve.clueMode') || 'chips',
   hintsLeft: CONFIG.HINTS,
+  revivesUsed: 0,
 };
 
 const view = {
@@ -135,6 +163,7 @@ function buildLevel() {
   state.wasteLeft = state.wasteTotal;
   state.hearts = CONFIG.START_HEARTS;
   state.status = 'playing';
+  state.revivesUsed = 0;
 }
 
 /* THE AUTHORING CONSTRAINT — the rule the player never has to think about.
@@ -231,20 +260,60 @@ function initScene() {
   view.renderer.setAnimationLoop(renderFrame);
 }
 
-function fitCamera() {
-  const spanY = CONFIG.GRID.y * CONFIG.CUBE;
-  const spanXZ = Math.hypot(CONFIG.GRID.x, CONFIG.GRID.z) * CONFIG.CUBE;
-  const vFov = (view.camera.fov * Math.PI) / 180;
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * view.camera.aspect);
+/* Solves the framing properly instead of treating width and height as
+   independent. Two things broke the old version: at an elevated angle the
+   mass's DEPTH adds to its on-screen height, and its horizontal extent
+   changes as you orbit. Measured, 3 of 4 shapes clipped, worst at 1.17 NDC.
 
-  view.spherical.radius = Math.max(
-    (spanY * 1.6) / 2 / Math.tan(vFov / 2),
-    (spanXZ * 1.15) / 2 / Math.tan(hFov / 2));
+   Here every corner of the bounding box is tested against every camera
+   orientation the player can actually reach, and we keep the largest
+   distance any of them demands. Computed once per level, so the framing
+   never pumps in and out while you drag. */
+const PHI_MIN = 0.35, PHI_MAX = 1.5;
+
+function fitCamera() {
+  const { x: gx, y: gy, z: gz } = CONFIG.GRID;
+  const c = CONFIG.CUBE;
+  const half = new THREE.Vector3(gx * c / 2, gy * c / 2, gz * c / 2);
+
+  view.target.set(0, (gy - 1) / 2 * c, 0);
+
+  const tanV = Math.tan((view.camera.fov * Math.PI) / 180 / 2);
+  const tanH = tanV * view.camera.aspect;
+
+  const corners = [];
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+    corners.push(new THREE.Vector3(sx * half.x, sy * half.y, sz * half.z));
+  }
+
+  const dir = new THREE.Vector3();
+  const right = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const UP = new THREE.Vector3(0, 1, 0);
+  let needed = 0;
+
+  for (let theta = 0; theta < Math.PI * 2; theta += Math.PI / 12) {
+    for (let s = 0; s <= 4; s++) {
+      const phi = PHI_MIN + (PHI_MAX - PHI_MIN) * (s / 4);
+      dir.setFromSphericalCoords(1, phi, theta);      // target -> camera
+      right.crossVectors(UP, dir).normalize();
+      up.crossVectors(dir, right).normalize();
+
+      for (const corner of corners) {
+        const depth = corner.dot(dir);                // toward the camera
+        needed = Math.max(needed,
+          Math.abs(corner.dot(right)) / tanH + depth,
+          Math.abs(corner.dot(up)) / tanV + depth);
+      }
+    }
+  }
+
+  view.spherical.radius = needed * 1.06;
   updateCamera();
 }
 
 function updateCamera() {
-  view.spherical.phi = THREE.MathUtils.clamp(view.spherical.phi, 0.35, 1.5);
+  view.spherical.phi = THREE.MathUtils.clamp(view.spherical.phi, PHI_MIN, PHI_MAX);
   view.cameraBase.setFromSpherical(view.spherical).add(view.target);
   view.camera.position.copy(view.cameraBase);
   view.camera.lookAt(view.target);
@@ -522,12 +591,26 @@ function finish(result) {
     }
   }
 
-  ui.bannerEmoji.textContent = result === 'won' ? '✨' : '💔';
-  ui.bannerTitle.textContent = result === 'won'
-    ? `${SHAPE.name} revealed` : 'Out of hearts';
-  ui.bannerBody.textContent = result === 'won'
-    ? `Carved away all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left.`
+  const won = result === 'won';
+  const setDone = won && stepIn(levelIndex) === PER_SET - 1;
+  const canRevive = !won && state.revivesUsed < CONFIG.MAX_REVIVES;
+
+  ui.bannerEmoji.textContent = won ? (setDone ? '🏛️' : '✨') : '💔';
+  ui.bannerTitle.textContent = won
+    ? (setDone ? `${SET_NAMES[setOf(levelIndex)] || 'Set'} complete` : `${SHAPE.name} revealed`)
+    : 'Out of hearts';
+  ui.bannerBody.textContent = won
+    ? `Carved all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left.`
     : `${state.wasteTotal - state.wasteLeft} of ${state.wasteTotal} carved before the chisel slipped.`;
+
+  ui.adBtn.hidden = !canRevive;
+  if (canRevive) { resetAdButton(); prepareRewardedAd(); }
+
+  ui.again.textContent = won
+    ? (levelIndex === SHAPES.length - 1 ? 'Start over' : 'Next level')
+    : 'Try again';
+  ui.again.onclick = won ? nextLevel : retryLevel;
+
   ui.banner.hidden = false;
 }
 
@@ -658,6 +741,18 @@ function updateHUD() {
   // Spelled out rather than iconographic on purpose: an icon that means
   // three different things is exactly the wrong call for a game that's
   // already asking a lot of working memory.
+  const set = setOf(levelIndex);
+  ui.levelName.textContent =
+    `${SET_NAMES[set] || `Set ${set + 1}`} · ${SHAPE.name}`;
+
+  let pips = '';
+  for (let i = 0; i < PER_SET; i++) {
+    const cls = i < stepIn(levelIndex) ? 'done'
+      : i === stepIn(levelIndex) ? 'current' : '';
+    pips += `<span class="pip ${cls}"></span>`;
+  }
+  ui.pips.innerHTML = pips;
+
   ui.clueBtn.textContent = `Clues · ${state.clueMode}`;
   ui.clueBtn.dataset.mode = state.clueMode;
   ui.hintBtn.textContent = `Hint · ${state.hintsLeft}`;
@@ -673,10 +768,10 @@ function toast(message) {
   toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 2200);
 }
 
-/* Cycles to the next shape so the proportions can be compared back to back. */
-function restart() {
-  shapeIndex = (shapeIndex + 1) % SHAPES.length;
-  SHAPE = SHAPES[shapeIndex];
+function loadLevel(index) {
+  levelIndex = THREE.MathUtils.clamp(index, 0, SHAPES.length - 1);
+  SHAPE = SHAPES[levelIndex];
+  localStorage.setItem('carve.level', levelIndex);
 
   disposeVoxels();
   buildLevel();
@@ -684,9 +779,94 @@ function restart() {
   buildVoxels();
 
   state.hintsLeft = CONFIG.HINTS;
-  view.target.set(0, (CONFIG.GRID.y - 1) / 2, 0);
-  fitCamera();
+  fitCamera();                    // also re-centres the target on the new mass
 
+  ui.banner.hidden = true;
+  updateHUD();
+}
+
+const nextLevel = () => loadLevel((levelIndex + 1) % SHAPES.length);
+const retryLevel = () => loadLevel(levelIndex);
+
+/* Kept as an alias: the prototype's dev console and the banner button both
+   still say "restart". */
+const restart = nextLevel;
+
+/* ---------- MONETIZATION ----------
+   Lifted wholesale from the Jenga build, which already had this shaped
+   right: a run ends, and the ad is offered as a way to continue rather than
+   as a tax on starting. Same two-path structure - a real rewarded ad when a
+   publisher id is configured, a local simulation otherwise, so the game is
+   always playable and no third-party request fires until we mean it. */
+
+const ADS = { publisherId: '', testMode: true, ready: false, showAd: null };
+
+function initAds() {
+  if (!ADS.publisherId) return;
+
+  const script = document.createElement('script');
+  script.async = true;
+  script.crossOrigin = 'anonymous';
+  script.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client='
+    + encodeURIComponent(ADS.publisherId);
+  script.dataset.adClient = ADS.publisherId;
+  if (ADS.testMode) script.dataset.adbreakTest = 'on';
+  document.head.appendChild(script);
+
+  window.adsbygoogle = window.adsbygoogle || [];
+  window.adBreak = window.adConfig = (o) => { window.adsbygoogle.push(o); };
+  window.adConfig({ preloadAdBreaks: 'on', sound: 'off' });
+  ADS.ready = true;
+}
+
+function prepareRewardedAd() {
+  ADS.showAd = null;
+  if (!ADS.ready) return;
+
+  window.adBreak({
+    type: 'reward',
+    name: 'carve-revive',
+    beforeReward: (showAdFn) => { ADS.showAd = showAdFn; },
+    adViewed: grantRevive,
+    adDismissed: resetAdButton,
+    adBreakDone: (info) => { if (info && info.breakStatus !== 'viewed') resetAdButton(); },
+  });
+}
+
+function resetAdButton() {
+  ui.adBtn.disabled = false;
+  ui.adBtn.textContent = '▶  Watch ad  ·  Keep carving';
+}
+
+function watchAd() {
+  if (state.revivesUsed >= CONFIG.MAX_REVIVES) return;
+  ui.adBtn.disabled = true;
+
+  if (ADS.showAd) {
+    ui.adBtn.textContent = 'Loading ad…';
+    const show = ADS.showAd;
+    ADS.showAd = null;
+    show();
+    return;
+  }
+
+  let left = CONFIG.AD_SECONDS;
+  ui.adBtn.textContent = `Ad playing…  ${left}`;
+  const timer = setInterval(() => {
+    left--;
+    if (left > 0) { ui.adBtn.textContent = `Ad playing…  ${left}`; return; }
+    clearInterval(timer);
+    ui.adBtn.textContent = 'Reward granted  ·  +1 heart';
+    setTimeout(grantRevive, 450);
+  }, 1000);
+}
+
+/* Revive resumes the same carve rather than restarting it - losing the
+   progress would make the ad feel like a punishment. */
+function grantRevive() {
+  state.revivesUsed++;
+  state.hearts++;
+  state.status = 'playing';
   ui.banner.hidden = true;
   updateHUD();
 }
@@ -704,8 +884,13 @@ ui.bannerBody = document.getElementById('banner-body');
 ui.clueBtn = document.getElementById('clue-btn');
 ui.hintBtn = document.getElementById('hint-btn');
 ui.toast = document.getElementById('toast');
+ui.levelName = document.getElementById('level-name');
+ui.pips = document.getElementById('pips');
+ui.again = document.getElementById('again');
+ui.adBtn = document.getElementById('ad-btn');
 
-document.getElementById('again').addEventListener('click', restart);
+ui.again.addEventListener('click', nextLevel);
+ui.adBtn.addEventListener('click', watchAd);
 ui.clueBtn.addEventListener('click', cycleClueMode);
 ui.hintBtn.addEventListener('click', useHint);
 
@@ -714,13 +899,16 @@ validateLevel();
 initScene();
 buildVoxels();
 initInput();
+initAds();
 updateHUD();
 
 window.Carve = {
   CONFIG, SHAPES, state, view,
   carve, toggleMark, pick, restart, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
-  get shape() { return SHAPE; },     // live, not a stale snapshot
+  loadLevel, nextLevel, retryLevel, watchAd, grantRevive, ADS,
+  get shape() { return SHAPE; },        // live, not a stale snapshot
+  get levelIndex() { return levelIndex; },
 };
 
 export default window.Carve;

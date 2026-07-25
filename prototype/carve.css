@@ -44,7 +44,40 @@ body {
   height: 100%;
 }
 
-#hud { grid-row: 1; display: flex; align-items: center; gap: 14px; padding: 14px 18px 10px; }
+#hud { grid-row: 1; padding: 12px 18px 10px; }
+
+#hud-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+#level-tag { display: flex; align-items: center; gap: 8px; }
+
+#level-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* Three blocks, filling in as a set is worked through. The set is the unit
+   of "one more go" — a short arc with an end in sight. */
+#pips { display: flex; gap: 3px; }
+
+.pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 2.5px;
+  background: #e4d6dd;
+  transition: background .3s ease, transform .3s cubic-bezier(.34,1.4,.64,1);
+}
+
+.pip.done { background: var(--mint); }
+.pip.current { background: var(--rose); transform: scale(1.18); }
 
 #hearts { display: flex; gap: 3px; font-size: 19px; line-height: 1; }
 .heart { color: var(--rose); transition: color .25s ease, transform .25s ease; }
@@ -182,6 +215,10 @@ body {
 }
 
 .btn:active { transform: scale(.97); }
+.btn + .btn { margin-top: 9px; }
+.btn[hidden] { display: none; }
+.btn:disabled { opacity: .65; cursor: default; transform: none; }
+.btn-ghost { background: transparent; color: var(--ink-soft); }
 
 @media (prefers-reduced-motion: reduce) {
   #banner-card { animation: none; }
