@@ -24,6 +24,7 @@ const CONFIG = {
   CUBE: 1,
   GAP: 0.07,
   START_HEARTS: 3,
+  HINTS: 3,          // once spent, this is the natural rewarded-ad slot
   LONG_PRESS: 480,
   TAP_SLOP: 10,
   TAP_TIME: 400,
@@ -73,6 +74,8 @@ const state = {
   hearts: CONFIG.START_HEARTS,
   wasteTotal: 0, wasteLeft: 0,
   status: 'playing',
+  clueMode: localStorage.getItem('carve.clueMode') || 'chips',
+  hintsLeft: CONFIG.HINTS,
 };
 
 const view = {
@@ -290,6 +293,9 @@ function buildVoxels() {
       { color: 0xe2607d, roughness: 0.5 });
     view.markMaterial = new THREE.MeshStandardMaterial(
       { color: 0xffc978, emissive: 0x6b4310, emissiveIntensity: 0.3, roughness: 0.45 });
+    // Cool teal, so a hint can never be mistaken for an amber player mark.
+    view.hintMaterial = new THREE.MeshStandardMaterial(
+      { color: 0x6fd3c4, emissive: 0x0f5b50, emissiveIntensity: 0.45, roughness: 0.4 });
   }
 
   const size = CONFIG.CUBE - CONFIG.GAP;
@@ -327,39 +333,64 @@ function disposeVoxels() {
 
 const textures = new Map();
 
-function digitTexture(n) {
-  if (textures.has(n)) return textures.get(n);
+function texture(cacheKey, draw) {
+  if (textures.has(cacheKey)) return textures.get(cacheKey);
 
   const size = 256;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const pad = size * 0.1;
+  draw(canvas.getContext('2d'), size);
 
-  ctx.shadowColor = 'rgba(74,59,73,0.32)';
-  ctx.shadowBlur = size * 0.08;
-  ctx.shadowOffsetY = size * 0.025;
-  ctx.beginPath();
-  ctx.roundRect(pad, pad, size - pad * 2, size - pad * 2, size * 0.26);
-  ctx.fillStyle = '#fffcfd';
-  ctx.fill();
+  const made = new THREE.CanvasTexture(canvas);
+  made.colorSpace = THREE.SRGBColorSpace;
+  made.anisotropy = 4;
+  textures.set(cacheKey, made);
+  return made;
+}
 
-  ctx.shadowColor = 'transparent';
-  ctx.lineWidth = size * 0.04;
-  ctx.strokeStyle = DIGIT_COLORS[n];
-  ctx.stroke();
+const font = (size, weight = 800) =>
+  `${weight} ${size}px -apple-system, "Segoe UI", system-ui, sans-serif`;
 
-  ctx.fillStyle = DIGIT_COLORS[n];
-  ctx.font = `800 ${size * 0.46}px -apple-system, "Segoe UI", system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(n, size / 2, size * 0.53);
+/* CHIP: small, opaque, high contrast. Easiest to read one at a time. */
+function digitTexture(n) {
+  return texture(`chip${n}`, (ctx, size) => {
+    const pad = size * 0.1;
+    ctx.shadowColor = 'rgba(74,59,73,0.32)';
+    ctx.shadowBlur = size * 0.08;
+    ctx.shadowOffsetY = size * 0.025;
+    ctx.beginPath();
+    ctx.roundRect(pad, pad, size - pad * 2, size - pad * 2, size * 0.26);
+    ctx.fillStyle = '#fffcfd';
+    ctx.fill();
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  textures.set(n, texture);
-  return texture;
+    ctx.shadowColor = 'transparent';
+    ctx.lineWidth = size * 0.04;
+    ctx.strokeStyle = DIGIT_COLORS[n];
+    ctx.stroke();
+
+    ctx.fillStyle = DIGIT_COLORS[n];
+    ctx.font = font(size * 0.46);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n, size / 2, size * 0.53);
+  });
+}
+
+/* GHOST: block-sized and translucent, so a clue reads as the socket the
+   cube left behind rather than a sticker floating in front of it. Thirty
+   of these sit far quieter than thirty chips. */
+function ghostTexture(n) {
+  return texture(`ghost${n}`, (ctx, size) => {
+    ctx.font = font(size * 0.82);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = size * 0.085;
+    ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(n, size / 2, size * 0.54);
+    ctx.fillStyle = DIGIT_COLORS[n];
+    ctx.fillText(n, size / 2, size * 0.54);
+  });
 }
 
 /* The cavity a carved cube leaves is exactly one cube wide, so the clue can
@@ -369,9 +400,59 @@ function addLabel(cell) {
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
     map: digitTexture(cell.near), transparent: true, depthWrite: false }));
   sprite.position.copy(worldPos(cell));
-  sprite.scale.setScalar(0.55);
+  sprite.userData.cellKey = cell.key;
   view.group.add(sprite);
   view.labels.push(sprite);
+  styleLabel(sprite);
+}
+
+/* ---------- CLUE LOAD ----------
+   Carving 30 cubes leaves 30 clues on screen and no way to tell which ones
+   still have anything to say. Two separate reliefs:
+     - satisfied clues fade back automatically (nothing to decide there)
+     - the player can dial the whole layer down by hand
+   Dimmed rather than deleted, so a clue can still be re-read, and because
+   satisfaction depends on the player's own marks it has to be reversible. */
+
+const neighboursOf = (cell) => OFFSETS
+  .map(([dx, dy, dz]) => state.byKey.get(key(cell.x + dx, cell.y + dy, cell.z + dz)))
+  .filter(Boolean);
+
+function clueSatisfied(cell) {
+  return neighboursOf(cell)
+    .every((n) => n.carved || n.struck || n.marked);
+}
+
+function styleLabel(sprite) {
+  const cell = state.byKey.get(sprite.userData.cellKey);
+  const mode = state.clueMode;
+
+  if (mode === 'off') {
+    sprite.visible = false;
+    return;
+  }
+
+  const ghost = mode === 'ghost';
+  const spent = clueSatisfied(cell);
+
+  sprite.visible = true;
+  sprite.material.map = ghost ? ghostTexture(cell.near) : digitTexture(cell.near);
+  sprite.scale.setScalar(ghost ? 0.92 : 0.55);
+  sprite.material.opacity = spent ? 0.16 : (ghost ? 0.62 : 1);
+  sprite.material.needsUpdate = true;
+}
+
+function refreshClues() {
+  view.labels.forEach(styleLabel);
+}
+
+function cycleClueMode() {
+  const order = ['chips', 'ghost', 'off'];
+  state.clueMode = order[(order.indexOf(state.clueMode) + 1) % order.length];
+  localStorage.setItem('carve.clueMode', state.clueMode);
+  refreshClues();
+  updateHUD();
+  toast(`Clues: ${state.clueMode}`);
 }
 
 /* ---------- PLAY ---------- */
@@ -406,6 +487,7 @@ function carve(cellKey) {
   }
 
   addLabel(cell);
+  refreshClues();          // this carve may have satisfied nearby clues
   updateHUD();
   if (state.wasteLeft === 0) finish('won');
 }
@@ -420,6 +502,7 @@ function toggleMark(cellKey) {
     mesh.material = cell.marked ? view.markMaterial : view.cubeMaterials[cell.y];
   }
   navigator.vibrate?.(15);
+  refreshClues();          // a decided cube can retire the clues around it
 }
 
 /* THE PAYOFF. Strip the clue chips and let the sculpture stand clean. */
@@ -446,6 +529,59 @@ function finish(result) {
     ? `Carved away all ${state.wasteTotal} blocks with ${state.hearts} of ${CONFIG.START_HEARTS} hearts left.`
     : `${state.wasteTotal - state.wasteLeft} of ${state.wasteTotal} carved before the chisel slipped.`;
   ui.banner.hidden = false;
+}
+
+/* ---------- HINTS ----------
+   Deliberately reasons only from ground truth - carved cells are known
+   waste, struck cells are known keepers. The player's own marks are treated
+   as unknown, because a hint built on a wrong guess would confidently point
+   at the wrong cube and destroy trust in the button. */
+
+function findHint() {
+  for (const cell of state.cells) {
+    if (!cell.carved) continue;
+
+    const neighbours = neighboursOf(cell);
+    const knownKeepers = neighbours.filter((n) => n.struck).length;
+    const unknown = neighbours.filter((n) => !n.carved && !n.struck);
+    if (!unknown.length) continue;
+
+    const remaining = cell.near - knownKeepers;
+    if (remaining === 0) return { kind: 'carve', cell: unknown[0], from: cell };
+    if (remaining === unknown.length) return { kind: 'keep', cell: unknown[0], from: cell };
+  }
+  return null;
+}
+
+function useHint() {
+  if (state.hintsLeft <= 0 || state.status !== 'playing') return;
+
+  const hint = findHint();
+  if (!hint) return toast('No certain move — try a different angle');
+
+  state.hintsLeft--;
+  updateHUD();
+
+  const mesh = view.meshByKey.get(hint.cell.key);
+  if (mesh) {
+    mesh.material = view.hintMaterial;
+    clearTimeout(view.hintTimer);
+
+    // Recompute on restore rather than replaying a captured material: the
+    // player may well mark the cube while it's still glowing, and putting
+    // the old material back would silently erase that mark.
+    view.hintTimer = setTimeout(() => {
+      const still = view.meshByKey.get(hint.cell.key);
+      const cell = state.byKey.get(hint.cell.key);
+      if (still && cell) {
+        still.material = cell.marked ? view.markMaterial : view.cubeMaterials[cell.y];
+      }
+    }, 2600);
+  }
+
+  toast(hint.kind === 'carve'
+    ? `The ${hint.from.near} says this one is waste`
+    : `The ${hint.from.near} says this one is part of the shape`);
 }
 
 /* ---------- INPUT ---------- */
@@ -518,6 +654,23 @@ function updateHUD() {
     markup += `<span class="heart${i < state.hearts ? '' : ' spent'}">&hearts;</span>`;
   }
   ui.hearts.innerHTML = markup;
+
+  // Spelled out rather than iconographic on purpose: an icon that means
+  // three different things is exactly the wrong call for a game that's
+  // already asking a lot of working memory.
+  ui.clueBtn.textContent = `Clues · ${state.clueMode}`;
+  ui.clueBtn.dataset.mode = state.clueMode;
+  ui.hintBtn.textContent = `Hint · ${state.hintsLeft}`;
+  ui.hintBtn.disabled = state.hintsLeft <= 0;
+}
+
+let toastTimer = null;
+
+function toast(message) {
+  ui.toast.textContent = message;
+  ui.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 2200);
 }
 
 /* Cycles to the next shape so the proportions can be compared back to back. */
@@ -530,6 +683,7 @@ function restart() {
   validateLevel();
   buildVoxels();
 
+  state.hintsLeft = CONFIG.HINTS;
   view.target.set(0, (CONFIG.GRID.y - 1) / 2, 0);
   fitCamera();
 
@@ -547,7 +701,13 @@ ui.banner = document.getElementById('banner');
 ui.bannerEmoji = document.getElementById('banner-emoji');
 ui.bannerTitle = document.getElementById('banner-title');
 ui.bannerBody = document.getElementById('banner-body');
+ui.clueBtn = document.getElementById('clue-btn');
+ui.hintBtn = document.getElementById('hint-btn');
+ui.toast = document.getElementById('toast');
+
 document.getElementById('again').addEventListener('click', restart);
+ui.clueBtn.addEventListener('click', cycleClueMode);
+ui.hintBtn.addEventListener('click', useHint);
 
 buildLevel();
 validateLevel();
@@ -556,6 +716,11 @@ buildVoxels();
 initInput();
 updateHUD();
 
-window.Carve = { CONFIG, SHAPE, state, view, carve, toggleMark, pick, restart, validateLevel };
+window.Carve = {
+  CONFIG, SHAPES, state, view,
+  carve, toggleMark, pick, restart, validateLevel,
+  cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
+  get shape() { return SHAPE; },     // live, not a stale snapshot
+};
 
 export default window.Carve;
