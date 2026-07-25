@@ -99,6 +99,7 @@ const blankSave = () => ({
   mode: 'scored',        // scored | zen
   zenUnlocked: false,
   zenTrialUsed: false,
+  muted: false,
 });
 
 function readSave() {
@@ -933,7 +934,7 @@ function carve(cellKey) {
     if (!isZen()) {
       refreshClues();
       updateHUD();
-      if (state.errors >= CONFIG.STARS) finish('lost');
+      if (state.errors >= CONFIG.STARS) { musicCrumble(); finish('lost'); }
       return;
     }
 
@@ -954,6 +955,7 @@ function carve(cellKey) {
   }
 
   burst(cell);
+  syncMusicLayers();
 
   addLabel(cell);
   refreshClues();          // this carve may have satisfied nearby clues
@@ -1209,6 +1211,7 @@ function initInput() {
 
   el.addEventListener('pointerdown', (e) => {
     ui.hint.classList.add('gone');
+    startAudio();
     holdTurntable();
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -1319,6 +1322,7 @@ function updateHUD() {
 
   ui.clueBtn.querySelector('b').textContent = state.clueMode;
   ui.glyphBtn.querySelector('b').textContent = state.glyphs;
+  ui.muteBtn.querySelector('b').textContent = save.muted ? 'Off' : 'On';
   ui.hintBtn.textContent = isZen() ? 'Hint · ∞' : `Hint · ${state.hintsLeft}`;
   ui.hintBtn.disabled = !isZen() && state.hintsLeft <= 0;
 }
@@ -1350,6 +1354,7 @@ function loadLevel(index) {
   buildVoxels();
 
   state.hintsLeft = CONFIG.HINTS;
+  resetMusicLayers();
   fitCamera();                    // also re-centres the target on the new mass
 
   ui.banner.hidden = true;
@@ -1451,6 +1456,228 @@ function grantRevive() {
   updateHUD();
 }
 
+/* ============================================================
+   LAYERED MUSIC
+   ------------------------------------------------------------
+   Vertical remixing: three stems that all start at the SAME instant and
+   never stop. Progress only moves their gain. That is the whole trick —
+   starting a stem late would put it out of phase with the others forever,
+   and no amount of fading fixes a track that is off the beat.
+
+   Files drop into TRACKS. While those are null the layers are synthesised,
+   so the mixer is testable today and swapping in real stems is a one-line
+   change that touches nothing else.
+   ============================================================ */
+
+const AUDIO = {
+  TRACKS: { base: null, rhythm: null, melody: null },   // put URLs here
+  FADE: 3,          // seconds, per the brief
+  CUT: 0.015,       // a true instant cut is an audible click, not silence
+  LOOP: 8,          // seconds; every generated part is built to divide this
+  THRESHOLDS: { rhythm: 0.33, melody: 0.66 },
+  VOLUME: 0.5,
+};
+
+const audio = {
+  ctx: null, master: null, layers: {},
+  started: false, ready: false,
+  faded: { rhythm: false, melody: false },
+};
+
+/* The brief calls this layersCleared. Carve's equivalent is how much of the
+   waste stone is gone. */
+const musicProgress = () =>
+  (state.wasteTotal ? (state.wasteTotal - state.wasteLeft) / state.wasteTotal : 0);
+
+/* ---------- generated stems ---------- */
+
+function buffer(seconds, fill) {
+  const rate = audio.ctx.sampleRate;
+  const buf = audio.ctx.createBuffer(1, Math.floor(rate * seconds), rate);
+  fill(buf.getChannelData(0), rate);
+  return buf;
+}
+
+/* Frequencies are whole numbers of cycles per loop, so the seam is silent.
+   110Hz and 165Hz give 880 and 1320 cycles across 8 seconds exactly. */
+function makeBase() {
+  return buffer(AUDIO.LOOP, (d, rate) => {
+    for (let i = 0; i < d.length; i++) {
+      const t = i / rate;
+      const swell = 0.75 + 0.25 * Math.sin((2 * Math.PI * t) / AUDIO.LOOP);
+      d[i] = (0.16 * Math.sin(2 * Math.PI * 110 * t)
+        + 0.10 * Math.sin(2 * Math.PI * 165 * t)) * swell;
+    }
+  });
+}
+
+/* 90bpm: a beat is 2/3s and twelve of them fill the loop exactly. */
+function makeRhythm() {
+  const beat = 60 / 90;
+  return buffer(AUDIO.LOOP, (d, rate) => {
+    for (let i = 0; i < d.length; i++) {
+      const t = i / rate;
+      const into = t % beat;
+      const env = Math.exp(-into * 22);
+      d[i] = 0.34 * Math.sin(2 * Math.PI * 180 * into) * env;
+    }
+  });
+}
+
+function makeMelody() {
+  const beat = 60 / 90;
+  const notes = [440, 550, 660, 550, 495, 660, 880, 660,
+    440, 550, 660, 495];       // pentatonic, twelve slots, one per beat
+  return buffer(AUDIO.LOOP, (d, rate) => {
+    for (let i = 0; i < d.length; i++) {
+      const t = i / rate;
+      const slot = Math.floor(t / beat) % notes.length;
+      const into = t % beat;
+      const env = Math.exp(-into * 5) * (1 - Math.min(into / beat, 1) ** 3);
+      d[i] = 0.16 * Math.sin(2 * Math.PI * notes[slot] * into) * env;
+    }
+  });
+}
+
+async function loadStem(name, generate) {
+  const url = AUDIO.TRACKS[name];
+  if (!url) return generate();
+
+  try {
+    const res = await fetch(url);
+    return await audio.ctx.decodeAudioData(await res.arrayBuffer());
+  } catch {
+    return generate();   // a missing stem must never take the game down
+  }
+}
+
+/* ---------- transport ---------- */
+
+/* Browsers refuse audio until a gesture, so this is armed by the first
+   pointerdown rather than at load. */
+async function startAudio() {
+  if (audio.started) return;
+  audio.started = true;
+
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+
+  audio.ctx = new Ctx();
+  if (audio.ctx.state === 'suspended') await audio.ctx.resume();
+
+  audio.master = audio.ctx.createGain();
+  audio.master.gain.value = save.muted ? 0 : AUDIO.VOLUME;
+  audio.master.connect(audio.ctx.destination);
+
+  const stems = {
+    base: await loadStem('base', makeBase),
+    rhythm: await loadStem('rhythm', makeRhythm),
+    melody: await loadStem('melody', makeMelody),
+  };
+
+  // ONE start time shared by all three. This is what keeps them in phase.
+  const at = audio.ctx.currentTime + 0.08;
+
+  for (const [name, buf] of Object.entries(stems)) {
+    const gain = audio.ctx.createGain();
+    gain.gain.value = name === 'base' ? 1 : 0;   // rhythm + melody start silent
+    gain.connect(audio.master);
+
+    const source = audio.ctx.createBufferSource();
+    source.buffer = buf;
+    source.loop = true;
+    source.connect(gain);
+    source.start(at);
+
+    audio.layers[name] = { gain, source };
+  }
+
+  audio.ready = true;
+  syncMusicLayers();   // in case progress is already past a threshold
+}
+
+/* Ramps are scheduled on the audio clock, not a JS timer — a setInterval
+   fade stutters under load and this one cannot. */
+function fadeLayer(name, to, seconds) {
+  const layer = audio.layers[name];
+  if (!layer) return;
+
+  const now = audio.ctx.currentTime;
+  layer.gain.gain.cancelScheduledValues(now);
+  layer.gain.gain.setValueAtTime(layer.gain.gain.value, now);
+  layer.gain.gain.linearRampToValueAtTime(to, now + seconds);
+}
+
+function syncMusicLayers() {
+  if (!audio.ready) return;
+  const progress = musicProgress();
+
+  if (!audio.faded.rhythm && progress >= AUDIO.THRESHOLDS.rhythm) {
+    audio.faded.rhythm = true;
+    fadeLayer('rhythm', 1, AUDIO.FADE);
+  }
+  if (!audio.faded.melody && progress >= AUDIO.THRESHOLDS.melody) {
+    audio.faded.melody = true;
+    fadeLayer('melody', 1, AUDIO.FADE);
+  }
+}
+
+function resetMusicLayers() {
+  audio.faded = { rhythm: false, melody: false };
+  if (!audio.ready) return;
+  fadeLayer('base', 1, 0.4);
+  fadeLayer('rhythm', 0, 0.25);
+  fadeLayer('melody', 0, 0.25);
+}
+
+/* The stone cracked: cut every layer and drop the rubble on top. */
+function musicCrumble() {
+  if (!audio.ready) return;
+  for (const name of Object.keys(audio.layers)) fadeLayer(name, 0, AUDIO.CUT);
+  playCrumble();
+}
+
+/* Filtered noise with a falling cutoff — rubble settling, not a hiss. */
+function playCrumble() {
+  const ctx = audio.ctx;
+  const now = ctx.currentTime;
+  const seconds = 1.2;
+
+  const noise = buffer(seconds, (d, rate) => {
+    for (let i = 0; i < d.length; i++) {
+      const t = i / rate;
+      d[i] = (Math.random() * 2 - 1) * (1 - t / seconds) ** 2.2;
+    }
+  });
+
+  const source = ctx.createBufferSource();
+  source.buffer = noise;
+
+  const lowpass = ctx.createBiquadFilter();
+  lowpass.type = 'lowpass';
+  lowpass.frequency.setValueAtTime(2200, now);
+  lowpass.frequency.exponentialRampToValueAtTime(130, now + seconds);
+
+  const gain = ctx.createGain();
+  gain.gain.value = 0.6;
+
+  source.connect(lowpass).connect(gain).connect(audio.master);
+  source.start(now);
+}
+
+function toggleMute() {
+  save.muted = !save.muted;
+  writeSave();
+  if (audio.master) {
+    const now = audio.ctx.currentTime;
+    audio.master.gain.cancelScheduledValues(now);
+    audio.master.gain.setValueAtTime(audio.master.gain.value, now);
+    audio.master.gain.linearRampToValueAtTime(save.muted ? 0 : AUDIO.VOLUME, now + 0.2);
+  }
+  updateHUD();
+  toast(save.muted ? 'Sound off' : 'Sound on');
+}
+
 /* ---------- BOOTSTRAP ---------- */
 
 ui.left = document.getElementById('left');
@@ -1476,6 +1703,8 @@ ui.bannerStars = document.getElementById('banner-stars');
 ui.adBtn.addEventListener('click', watchAd);
 ui.clueBtn.addEventListener('click', cycleClueMode);
 ui.glyphBtn.addEventListener('click', cycleGlyphs);
+ui.muteBtn = document.getElementById('mute-btn');
+ui.muteBtn.addEventListener('click', toggleMute);
 ui.modeBtn.addEventListener('click', toggleMode);
 ui.hintBtn.addEventListener('click', useHint);
 
@@ -1530,6 +1759,8 @@ window.Carve = {
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
   cycleGlyphs, toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
+  AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
+  musicCrumble, musicProgress, fadeLayer, toggleMute,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,
   save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
