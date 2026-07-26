@@ -17,7 +17,7 @@
        That is the whole of "mutually exclusive ad stacks" — enforced at
        runtime, so the two builds cannot drift apart in anything but this. -->
 
-  <link rel="stylesheet" href="carve.css?v=5">
+  <link rel="stylesheet" href="carve.css?v=6">
 </head>
 <body>
   <div id="bg-a" class="bg"></div>
@@ -67,6 +67,9 @@
       <button id="clue-btn" class="row" type="button"><span>Clues</span><b>Chips</b></button>
       <button id="mute-btn" class="row" type="button"><span>Sound</span><b>On</b></button>
       <button id="focus-btn" class="row" type="button"><span>Tone</span><b>Off</b></button>
+      <!-- Hidden entirely when no publisher id is set, so the game never
+           offers a setting for something that cannot happen. -->
+      <button id="ads-btn" class="row" type="button" hidden><span>Ads</span><b>Ask</b></button>
       <p class="sheet-note">Pulse plays through anything. Binaural needs headphones &mdash;
          the beat only exists between two ears. Ambience, not a health tool.</p>
       <button id="sheet-close" class="btn btn-ghost" type="button">Done</button>
@@ -83,6 +86,22 @@
       <button id="zen-buy" class="btn" type="button">Unlock Zen</button>
       <p class="zen-note">Included free with any pack you buy.</p>
       <button id="zen-close" class="btn btn-ghost" type="button">Not now</button>
+    </div>
+  </div>
+
+  <!-- Shown only when an ad publisher id is actually configured. No id, no
+       ads, no reason to interrupt anyone with a question about them. -->
+  <div id="consent" hidden>
+    <div id="consent-card" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+      <h3 id="consent-title">Ads in Carve</h3>
+      <p>Carve can show an optional ad when a carve cracks, to let you keep
+         going. Ads come from Google and set cookies to pick which ad to show.</p>
+      <p class="consent-note">Say no and the game plays exactly the same &mdash;
+         you still get the same chances to keep carving. Nothing else about
+         Carve tracks you. You can change this any time under Display.</p>
+      <button id="consent-yes" class="btn" type="button">Allow ads</button>
+      <button id="consent-no" class="btn btn-ghost" type="button">No ads</button>
+      <a class="consent-link" href="privacy.html">Read the privacy page</a>
     </div>
   </div>
 
@@ -108,6 +127,6 @@
     }
   }
   </script>
-  <script type="module" src="carve.js?v=14"></script>
+  <script type="module" src="carve.js?v=16"></script>
 </body>
 </html>

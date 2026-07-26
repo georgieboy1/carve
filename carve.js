@@ -1388,6 +1388,15 @@ const toCollection = () => { location.href = 'gallery.html'; };
    publisher id is configured, a local simulation otherwise, so the game is
    always playable and no third-party request fires until we mean it. */
 
+/* ---- THE ONE LINE TO CHANGE WHEN ADSENSE APPROVES ----
+   Paste the ca-pub-XXXXXXXXXXXXXXXX id from your AdSense account into
+   publisherId. Everything else is already wired: setting it turns on the
+   consent prompt, the Display > Ads row, and the rewarded ad on a crack.
+   Leave it empty and the game runs with no ad code and no consent question.
+
+   Set testMode to false for real ads. While true, Google serves test ads
+   only - which is what you want until the site is approved, because live
+   ads on an unapproved site is a policy violation. */
 const ADS = { publisherId: '', testMode: true, ready: false, showAd: null };
 
 /* Loading the AdSense script sets third-party cookies, and GDPR/ePrivacy
@@ -1411,11 +1420,37 @@ function needsConsent() {
   return !!ADS.publisherId && consentState() === null;
 }
 
+function setConsent(value) {
+  try { localStorage.setItem(CONSENT_KEY, value); } catch { /* private mode */ }
+  ui.consent.hidden = true;
+  if (value === 'granted') { initAds(); prepareRewardedAd(); }
+}
+
+/* Consent has to be withdrawable to be consent at all, so this is reachable
+   from Display, not only on first run. Revoking cannot unload a script that
+   has already run — the honest thing is to say the change lands on reload
+   rather than to imply we can claw it back. */
+function openConsent() {
+  if (!ADS.publisherId) return false;
+  ui.consent.hidden = false;
+  return true;
+}
+
+function consentLabel() {
+  const state = consentState();
+  return state === 'granted' ? 'On' : state === 'denied' ? 'Off' : 'Ask';
+}
+
 function initAds() {
   // Never run a second ad stack alongside the platform's own.
   if (window.CrazyGames?.SDK) return;
   if (!ADS.publisherId) return;
   if (consentState() !== 'granted') return;
+  /* Idempotent. Consent is revocable, so grant -> revoke -> grant is a real
+     sequence a player can produce, and without this each pass appended
+     another copy of Google's script. Three loader tags on one page is both
+     wasted bandwidth and the kind of thing that fails an AdSense review. */
+  if (ADS.ready) return;
 
   const script = document.createElement('script');
   script.async = true;
@@ -2034,6 +2069,17 @@ ui.muteBtn = document.getElementById('mute-btn');
 ui.muteBtn.addEventListener('click', toggleMute);
 ui.focusBtn = document.getElementById('focus-btn');
 ui.focusBtn.addEventListener('click', cycleFocus);
+
+ui.adsBtn = document.getElementById('ads-btn');
+ui.adsBtn.addEventListener('click', () => { closeSheet(); openConsent(); });
+
+/* The row only exists when ads are actually configured. Reflects the stored
+   choice rather than a toggle, because changing it reopens the same prompt
+   the player answered the first time - one explanation, one place. */
+function syncAdsRow() {
+  ui.adsBtn.hidden = !ADS.publisherId;
+  ui.adsBtn.querySelector('b').textContent = consentLabel();
+}
 ui.modeBtn.addEventListener('click', toggleMode);
 ui.hintBtn.addEventListener('click', useHint);
 
@@ -2047,6 +2093,16 @@ document.getElementById('zen-close')
 ui.zenSheet.addEventListener('click', (e) => {
   if (e.target === ui.zenSheet) ui.zenSheet.hidden = true;
 });
+
+ui.consent = document.getElementById('consent');
+document.getElementById('consent-yes')
+  .addEventListener('click', () => { setConsent('granted'); syncAdsRow(); });
+document.getElementById('consent-no')
+  .addEventListener('click', () => { setConsent('denied'); syncAdsRow(); });
+/* No dismiss-by-backdrop and no Escape here, unlike the other sheets. An
+   unanswered consent prompt is not a "no" we can act on — it just leaves
+   needsConsent() true and asks again next launch, which is worse for the
+   player than answering. Both buttons are one tap away. */
 
 ui.sheet = document.getElementById('sheet');
 const closeSheet = () => { ui.sheet.hidden = true; };
@@ -2084,6 +2140,13 @@ applyTheme(themeFor(LEVELS[levelIndex].pack), true);
 initAds();
 initCrazy();
 registerServiceWorker();
+
+/* Ask before anything loads, not after. initAds() above already refused if
+   consent is missing, so this prompt is what unblocks it — and on a fresh
+   visit with ads configured, no ad request has been made at the moment the
+   question is asked. That ordering is the whole point of the gate. */
+syncAdsRow();
+if (needsConsent()) openConsent();
 // Establish a fitted distance immediately; zoom is measured relative to
 // it, and syncSize() only reaches fitCamera() once a frame has drawn.
 fitCamera();
@@ -2094,7 +2157,8 @@ window.Carve = {
   carve, toggleMark, pick, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
-  initAds, consentState, needsConsent, registerServiceWorker,
+  initAds, consentState, needsConsent, setConsent, openConsent, consentLabel,
+  syncAdsRow, registerServiceWorker,
   toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
   applyTheme, themeState, rampColour, SIGNALS,
