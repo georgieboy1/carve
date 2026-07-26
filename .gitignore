@@ -1,7 +1,5 @@
 .DS_Store
 *.log
 
-# The build log stays local. It carries monetization strategy, pricing
-# reasoning and the CrazyGames revenue split, none of which belongs in a
-# public repo. Purged from history 2026-07-25 before the first push.
+# Local working notes, not part of the shipped game.
 blueprint.md
