@@ -11,18 +11,17 @@
    code, and the validator checks it stands before it ever reaches a player.
    ============================================================ */
 
-import { SHAPES, parse, validate } from './shapes.js';
+import { LEVELS, parse, validate } from './shapes.js';
 import { thumbnail, layerMaterial } from './thumbs.js';
 import { themeForShape } from './themes.js';
 
 const grid = document.getElementById('grid');
 
-// New collections first, purely so they are easy to eyeball in review.
-const ORDER = ['numerals','letters'];
-const ordered = [...SHAPES].sort((a,b) =>
-  (ORDER.indexOf(b.category) - ORDER.indexOf(a.category)));
-
-const rows = ordered.map((shape) => {
+/* Play order, grouped by pack — the same order the game and the shelf use,
+   so a sculpture sits in the same place in all three. (This was briefly
+   sorted to float the newest collections to the top for review, which
+   silently moved every other sculpture.) */
+const rows = LEVELS.map((shape) => {
   const { cells, grid: g } = parse(shape);
   const report = validate(shape);
   const ramp = themeForShape(shape.name).ramp;
@@ -54,4 +53,4 @@ console.table(rows.map((r) => ({
   stands: r.report.stands,
 })));
 
-window.Catalogue = { SHAPES, rows };
+window.Catalogue = { LEVELS, rows };
