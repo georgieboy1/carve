@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#fdf3f8">
   <title>Carve — prototype — KG Studio</title>
-  <!-- CrazyGames HTML5 SDK v3. A classic script, deliberately not a module:
-       it must finish executing before carve.js (which is deferred as a
-       module) looks for window.CrazyGames. Absent off-platform, which the
-       game handles by falling through to its own ad paths. -->
-  <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+  <!-- No CrazyGames SDK here: this is the open-web build, and the tag is the
+       ONE line that separates it from crazygames-release. carve.js keeps its
+       platform code, but every entry point checks window.CrazyGames first and
+       returns false, so without this tag the game falls through to AdSense.
+       That is the whole of "mutually exclusive ad stacks" — enforced at
+       runtime, so the two builds cannot drift apart in anything but this. -->
 
   <link rel="stylesheet" href="carve.css?v=4">
 </head>
