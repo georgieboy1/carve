@@ -45,18 +45,21 @@ scene.add(fill);
 const camera = new THREE.PerspectiveCamera(42, W / H, 0.1, 200);
 const geometry = new RoundedBoxGeometry(0.93, 0.93, 0.93, 4, 0.1);
 
-export const PALETTE = ['#f7c3d5', '#dfc9f2', '#c3e5f1', '#c7efdf'];
-
+/* The ramp is passed in, not owned here: the game, the shelf and the
+   catalogue all colour a sculpture from its pack's theme, so a sculpture
+   looks the same wherever it appears. */
 const colours = new Map();
 
-export function layerMaterial(y, maxY) {
+export function layerMaterial(ramp, y, maxY) {
   const t = maxY > 1 ? y / (maxY - 1) : 0;
-  const cacheKey = t.toFixed(3);
+  const cacheKey = `${ramp.join('')}|${t.toFixed(3)}`;
   if (colours.has(cacheKey)) return colours.get(cacheKey);
 
-  const i = Math.min(Math.floor(t * (PALETTE.length - 1)), PALETTE.length - 2);
-  const colour = new THREE.Color(PALETTE[i])
-    .lerp(new THREE.Color(PALETTE[i + 1]), t * (PALETTE.length - 1) - i);
+  const scaled = t * (ramp.length - 1);
+  const i = Math.min(Math.floor(scaled), ramp.length - 2);
+  const colour = new THREE.Color(ramp[i])
+    .lerp(new THREE.Color(ramp[i + 1]), scaled - i);
+
   const made = new THREE.MeshStandardMaterial({ color: colour, roughness: 0.62 });
   colours.set(cacheKey, made);
   return made;

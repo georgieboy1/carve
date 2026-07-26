@@ -18,6 +18,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js';
+import { SIGNALS, themeFor } from './themes.js';
 
 const CONFIG = {
   GRID: null,        // set per shape
@@ -217,7 +218,71 @@ function importSave(code) {
 let levelIndex = Math.min(Math.max(save.level | 0, 0), LEVELS.length - 1);
 let SHAPE = LEVELS[levelIndex];
 
-const PALETTE = ['#f7c3d5', '#dfc9f2', '#c3e5f1', '#c7efdf'];
+/* ---------- THEMES ----------
+   The stone ramp is no longer one global palette. Each pack carries its own,
+   and moving between packs eases the cubes and the background across rather
+   than cutting — the ease runs on the same dt the shards use.
+
+   Signal colours are imported, never derived from the theme: see themes.js
+   for why that separation is load-bearing. */
+const themeState = { current: null, targets: [] };
+
+function rampColour(ramp, y, maxY) {
+  const t = maxY > 1 ? y / (maxY - 1) : 0;
+  const scaled = t * (ramp.length - 1);
+  const i = Math.min(Math.floor(scaled), ramp.length - 2);
+  return new THREE.Color(ramp[i])
+    .lerp(new THREE.Color(ramp[i + 1]), scaled - i);
+}
+
+function applyTheme(theme, instant = false) {
+  if (!theme || themeState.current === theme) return;
+  themeState.current = theme;
+
+  themeState.targets = view.cubeMaterials.map(
+    (_, y) => rampColour(theme.ramp, y, CONFIG.MAX_Y));
+
+  if (instant) {
+    view.cubeMaterials.forEach((m, i) => m.color.copy(themeState.targets[i]));
+  }
+
+  crossfadeBackground(theme.bg);
+}
+
+/* Gradients cannot be transitioned, so the background is two stacked layers
+   and we fade the incoming one over the outgoing one. */
+let bgFront = true;
+
+function crossfadeBackground(stops) {
+  const gradient = `radial-gradient(118% 62% at 50% 16%, ${stops[0]} 0%, `
+    + `${stops[1]} 46%, transparent 100%), `
+    + `linear-gradient(180deg, ${stops[0]} 0%, ${stops[1]} 62%, ${stops[2]} 100%)`;
+
+  const incoming = document.getElementById(bgFront ? 'bg-b' : 'bg-a');
+  const outgoing = document.getElementById(bgFront ? 'bg-a' : 'bg-b');
+  if (!incoming || !outgoing) return;
+
+  incoming.style.background = gradient;
+  incoming.style.opacity = '1';
+  outgoing.style.opacity = '0';
+  bgFront = !bgFront;
+}
+
+/* Framerate-independent ease: the same wall-clock feel at 30fps or 120. */
+function stepTheme(dt) {
+  if (!themeState.targets.length) return;
+  const k = 1 - Math.exp(-dt * 5);
+
+  view.cubeMaterials.forEach((material, i) => {
+    const target = themeState.targets[i];
+    if (!target) return;
+    material.color.lerp(target, k);
+
+    // Shards are chips off the block, so they follow the stone.
+    const shard = shards.materials[i];
+    if (shard) { shard.color.copy(material.color); shard.emissive.copy(material.color); }
+  });
+}
 const DIGIT_COLORS = ['#b0a3ad', '#4faa96', '#4295c9', '#7377cf',
   '#a065c6', '#cc5c96', '#d95a68'];
 
@@ -485,6 +550,7 @@ function renderFrame() {
 
   syncSize();
   stepShards(dt);
+  stepTheme(dt);
   if (view.examining) stepExamine(dt, now);
 
   view.renderer.render(view.scene, view.camera);
@@ -504,24 +570,20 @@ function buildVoxels() {
     // Ramp spans MAX_Y, not the current grid, so materials survive a shape
     // change without needing to be rebuilt and disposed.
     for (let y = 0; y < CONFIG.MAX_Y; y++) {
-      const t = y / (CONFIG.MAX_Y - 1);
-      const i = Math.min(Math.floor(t * (PALETTE.length - 1)), PALETTE.length - 2);
-      const color = new THREE.Color(PALETTE[i])
-        .lerp(new THREE.Color(PALETTE[i + 1]), t * (PALETTE.length - 1) - i);
       view.cubeMaterials.push(new THREE.MeshStandardMaterial(
-        { color, roughness: 0.62, metalness: 0 }));
+        { color: 0xffffff, roughness: 0.62, metalness: 0 }));
     }
     view.keeperMaterial = new THREE.MeshStandardMaterial(
-      { color: 0xe2607d, roughness: 0.5 });
+      { color: SIGNALS.danger, roughness: 0.5 });
     view.markMaterial = new THREE.MeshStandardMaterial(
-      { color: 0xffc978, emissive: 0x6b4310, emissiveIntensity: 0.3, roughness: 0.45 });
+      { color: SIGNALS.mark, emissive: 0x6b4310, emissiveIntensity: 0.3, roughness: 0.45 });
     // Cool teal, so a hint can never be mistaken for an amber player mark.
     view.hintMaterial = new THREE.MeshStandardMaterial(
-      { color: 0x6fd3c4, emissive: 0x0f5b50, emissiveIntensity: 0.45, roughness: 0.4 });
+      { color: SIGNALS.hint, emissive: 0x0f5b50, emissiveIntensity: 0.45, roughness: 0.4 });
 
     // Audit ghost. depthTest off so buried sculpture reads through the stone.
     view.auditMaterial = new THREE.MeshStandardMaterial({
-      color: 0xff6b8a, emissive: 0xff6b8a, emissiveIntensity: 0.55,
+      color: SIGNALS.danger, emissive: SIGNALS.danger, emissiveIntensity: 0.55,
       transparent: true, opacity: 0.42, depthTest: false, depthWrite: false,
     });
   }
@@ -1355,6 +1417,7 @@ function loadLevel(index) {
 
   state.hintsLeft = CONFIG.HINTS;
   resetMusicLayers();
+  applyTheme(themeFor(LEVELS[levelIndex].pack));
   fitCamera();                    // also re-centres the target on the new mass
 
   ui.banner.hidden = true;
@@ -1746,6 +1809,7 @@ initScene();
 buildVoxels();
 initInput();
 initShards();
+applyTheme(themeFor(LEVELS[levelIndex].pack), true);
 initAds();
 // Establish a fitted distance immediately; zoom is measured relative to
 // it, and syncSize() only reaches fitCamera() once a frame has drawn.
@@ -1759,6 +1823,7 @@ window.Carve = {
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
   cycleGlyphs, toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
+  applyTheme, themeState, rampColour, SIGNALS,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
   musicCrumble, musicProgress, fadeLayer, toggleMute,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,

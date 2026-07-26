@@ -17,6 +17,7 @@
 
 import { PACKS, byName, parse } from './shapes.js';
 import { thumbnail, layerMaterial, blankMaterial } from './thumbs.js';
+import { themeFor } from './themes.js';
 
 const SAVE_KEY = 'carve.save';
 
@@ -64,10 +65,14 @@ const carriesZen = !save.zenUnlocked
 
 for (const pack of PACKS) {
   const unlocked = owns(pack);
+  const theme = themeFor(pack.id);
   const done = pack.shapes.filter((n) => save.best[n]).length;
 
   const section = document.createElement('section');
   section.className = 'pack';
+  // Each shelf row sits on a whisper of its own pack's sky.
+  section.style.background =
+    `linear-gradient(180deg, ${theme.bg[0]} 0%, ${theme.bg[2]} 100%)`;
 
   const head = document.createElement('div');
   head.className = 'pack-head';
@@ -110,7 +115,7 @@ for (const pack of PACKS) {
       });
 
     const url = thumbnail(shown, grid,
-      isDone ? (y) => layerMaterial(y, grid.y) : () => blankMaterial);
+      isDone ? (y) => layerMaterial(theme.ramp, y, grid.y) : () => blankMaterial);
 
     const stars = best?.stars ?? 0;
     const label = isDone

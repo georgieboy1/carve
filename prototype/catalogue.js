@@ -13,13 +13,15 @@
 
 import { SHAPES, parse, validate } from './shapes.js';
 import { thumbnail, layerMaterial } from './thumbs.js';
+import { themeForShape } from './themes.js';
 
 const grid = document.getElementById('grid');
 
 const rows = SHAPES.map((shape) => {
   const { cells, grid: g } = parse(shape);
   const report = validate(shape);
-  const url = thumbnail(cells.values(), g, (y) => layerMaterial(y, g.y));
+  const ramp = themeForShape(shape.name).ramp;
+  const url = thumbnail(cells.values(), g, (y) => layerMaterial(ramp, y, g.y));
   return { shape, report, g, kept: cells.size, url };
 });
 

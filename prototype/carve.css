@@ -20,10 +20,19 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* The gradient lives on two stacked layers rather than on body, because a
+   CSS gradient cannot be transitioned — the incoming one fades over the
+   outgoing one when the pack changes. */
+.bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  transition: opacity .9s ease;
+  pointer-events: none;
+}
+
 body {
-  background:
-    radial-gradient(118% 62% at 50% 16%, #fffdfe 0%, #fdf3f8 44%, transparent 100%),
-    linear-gradient(180deg, #fdf3f8 0%, #f6e9f3 62%, #eddfec 100%);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100dvh;
