@@ -99,18 +99,18 @@ and reachable at `/<repo>/jenga/` — it still runs, with its own service
 worker and manifest, it just isn't the front door any more.
 
 It's committed locally on `main` but **not published yet**. When you're
-ready, create an empty repo named `jenga-sweeper` at
+ready, create an empty repo named `carve` at
 <https://github.com/new> (no README, no `.gitignore`, no licence — an
 initial commit on their side will collide with ours), then:
 
 ```bash
-git remote add origin https://github.com/kacygeorge/jenga-sweeper.git
+git remote add origin https://github.com/kacygeorge/carve.git
 git push -u origin main
 ```
 
 Then turn on Pages: **Settings → Pages → Source: Deploy from a branch →
 `main` / `(root)`**. The site goes live at
-`https://kacygeorge.github.io/jenga-sweeper/` a minute or so later.
+`https://kacygeorge.github.io/carve/` a minute or so later.
 
 Note that a public repo plus Pages means both the code and the game are
 publicly visible and indexable by search engines.
