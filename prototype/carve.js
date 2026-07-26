@@ -130,12 +130,56 @@ function migrateLooseKeys() {
 
 const save = readSave();
 
+/* Writes to both. localStorage is the local truth and works everywhere;
+   the platform copy is what survives a different device. Their SDK debounces
+   internally, so calling this on every change is fine, and our save is a
+   couple of hundred bytes against their 1MB ceiling. */
 function writeSave() {
+  const body = JSON.stringify(save);
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+    localStorage.setItem(SAVE_KEY, body);
   } catch {
     /* private mode / quota - the run still works, it just won't persist */
   }
+  try {
+    if (CRAZY.ready) CRAZY.sdk.data.setItem(SAVE_KEY, body);
+  } catch { /* platform storage unavailable; the local copy still stands */ }
+}
+
+/* Runs once the SDK is up, which is necessarily AFTER the synchronous read
+   at module load. Two jobs:
+     - adopt the platform's copy, because it is the one that followed the
+       player from another device
+     - otherwise push the local copy up, which their docs explicitly instruct
+       ("copy all the existing localStorage keys into the data module if the
+       user played your game before") — skip it and every existing player
+       silently starts over
+   This is also the cross-device save we thought needed a backend. On this
+   platform it is free. */
+function syncPlatformSave() {
+  if (!CRAZY.ready) return false;
+
+  let remote = null;
+  try {
+    remote = CRAZY.sdk.data.getItem(SAVE_KEY);
+  } catch { return false; }
+
+  if (!remote) {
+    writeSave();                    // first run here: seed it from local
+    return false;
+  }
+
+  try {
+    const data = JSON.parse(remote);
+    if (typeof data !== 'object' || data === null) return false;
+    Object.assign(save, blankSave(), data, { version: SAVE_VERSION });
+  } catch {
+    return false;                   // corrupt remote must not brick the game
+  }
+
+  state.clueMode = save.clueMode;
+  state.mode = save.mode || 'scored';
+  return true;
 }
 
 /* ---------- SCORING ----------
@@ -1669,6 +1713,10 @@ async function initCrazy() {
     await sdk.init();                     // async, and unusable until it lands
     CRAZY.sdk = sdk;
     CRAZY.ready = true;
+
+    // Adopt cloud progress before the player gets far into level one.
+    if (syncPlatformSave()) loadLevel(save.level | 0);
+
     sdk.game.gameplayStart();
   } catch (error) {
     console.warn('[crazygames] init failed, continuing without it:', error);
@@ -1826,7 +1874,7 @@ window.Carve = {
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
   applyTheme, themeState, rampColour, SIGNALS,
   CRAZY, initCrazy, requestCrazyAd, fractureThenAd, pauseForAd, resumeAfterAd,
-  gameplayStart, gameplayStop, fadeMaster,
+  gameplayStart, gameplayStop, fadeMaster, syncPlatformSave,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
   musicCrumble, musicProgress, fadeLayer, toggleMute,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,
