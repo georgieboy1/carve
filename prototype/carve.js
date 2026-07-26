@@ -293,6 +293,7 @@ const state = {
   mode: save.mode || 'scored',
   hintsLeft: CONFIG.HINTS,
   revivesUsed: 0,
+  paused: false,        // frozen behind a platform ad
   errors: 0,             // keepers struck this attempt
   hintsUsed: 0,
   unscored: false,       // set the moment an attempt touches Zen
@@ -547,9 +548,11 @@ function renderFrame() {
   lastFrame = now;
 
   syncSize();
-  stepShards(dt);
-  stepTheme(dt);
-  if (view.examining) stepExamine(dt, now);
+  if (!state.paused) {
+    stepShards(dt);
+    stepTheme(dt);
+    if (view.examining) stepExamine(dt, now);
+  }
 
   view.renderer.render(view.scene, view.camera);
 }
@@ -883,7 +886,7 @@ function carve(cellKey) {
     if (!isZen()) {
       refreshClues();
       updateHUD();
-      if (state.errors >= CONFIG.STARS) { musicCrumble(); finish('lost'); }
+      if (state.errors >= CONFIG.STARS) fractureThenAd();
       return;
     }
 
@@ -1008,6 +1011,7 @@ function finish(result) {
    X until the player is done looking. */
 
 function enterExamine() {
+  gameplayStop();      // the run is over; this is a break
   view.examining = true;
   view.turntablePause = 0;
 
@@ -1159,6 +1163,7 @@ function initInput() {
   };
 
   el.addEventListener('pointerdown', (e) => {
+    if (state.paused) return;
     ui.hint.classList.add('gone');
     startAudio();
     holdTurntable();
@@ -1308,6 +1313,7 @@ function loadLevel(index) {
 
   ui.banner.hidden = true;
   updateHUD();
+  gameplayStart();                // a level starting is gameplay resuming
 }
 
 /* Next level WITHIN the pack. At the end of a pack there is no next — the
@@ -1335,6 +1341,8 @@ const toCollection = () => { location.href = 'gallery.html'; };
 const ADS = { publisherId: '', testMode: true, ready: false, showAd: null };
 
 function initAds() {
+  // Never run a second ad stack alongside the platform's own.
+  if (window.CrazyGames?.SDK) return;
   if (!ADS.publisherId) return;
 
   const script = document.createElement('script');
@@ -1374,6 +1382,13 @@ function resetAdButton() {
 function watchAd() {
   if (state.revivesUsed >= CONFIG.MAX_REVIVES) return;
   ui.adBtn.disabled = true;
+
+  // Platform first: on CrazyGames this is the only permitted ad path.
+  const onPlatform = requestCrazyAd('rewarded', {
+    onFinished: grantRevive,
+    onError: () => { resetAdButton(); toast('Ad unavailable — carry on'); },
+  });
+  if (onPlatform) { ui.adBtn.textContent = 'Loading ad…'; return; }
 
   if (ADS.showAd) {
     ui.adBtn.textContent = 'Loading ad…';
@@ -1614,17 +1629,118 @@ function playCrumble() {
   source.start(now);
 }
 
+function fadeMaster(to, seconds) {
+  if (!audio.master) return;
+  const now = audio.ctx.currentTime;
+  audio.master.gain.cancelScheduledValues(now);
+  audio.master.gain.setValueAtTime(audio.master.gain.value, now);
+  audio.master.gain.linearRampToValueAtTime(to, now + seconds);
+}
+
 function toggleMute() {
   save.muted = !save.muted;
   writeSave();
-  if (audio.master) {
-    const now = audio.ctx.currentTime;
-    audio.master.gain.cancelScheduledValues(now);
-    audio.master.gain.setValueAtTime(audio.master.gain.value, now);
-    audio.master.gain.linearRampToValueAtTime(save.muted ? 0 : AUDIO.VOLUME, now + 0.2);
-  }
+  fadeMaster(save.muted ? 0 : AUDIO.VOLUME, 0.2);
   updateHUD();
   toast(save.muted ? 'Sound off' : 'Sound on');
+}
+
+/* ============================================================
+   CRAZYGAMES
+   ------------------------------------------------------------
+   The platform layer. Absent off-platform — every call here checks first
+   and the game falls through to its own ad paths, so the same build runs
+   on CrazyGames, on GitHub Pages, and on a laptop with no network.
+
+   Their rules, which this implements rather than approximates:
+     - init() is async and must be awaited; the SDK is unusable before it
+     - mute and pause on adStarted, restore on adFinished AND adError
+     - gameplayStart/Stop on every break, not just ads
+     - the game must still work with an adblocker on
+   ============================================================ */
+
+const CRAZY = { sdk: null, ready: false, adOpen: false };
+
+async function initCrazy() {
+  const sdk = window.CrazyGames?.SDK;
+  if (!sdk) return;                       // not on CrazyGames; nothing to do
+
+  try {
+    await sdk.init();                     // async, and unusable until it lands
+    CRAZY.sdk = sdk;
+    CRAZY.ready = true;
+    sdk.game.gameplayStart();
+  } catch (error) {
+    console.warn('[crazygames] init failed, continuing without it:', error);
+  }
+}
+
+/* Break signals. Safe to call whether or not the SDK is present. */
+const gameplayStart = () => { if (CRAZY.ready && !CRAZY.adOpen) CRAZY.sdk.game.gameplayStart(); };
+const gameplayStop = () => { if (CRAZY.ready) CRAZY.sdk.game.gameplayStop(); };
+
+/* Pause is a real freeze, not just a flag: the frame loop keeps drawing so
+   the canvas never goes black behind the ad, but nothing advances. */
+function pauseForAd() {
+  CRAZY.adOpen = true;
+  state.paused = true;
+  gameplayStop();
+  fadeMaster(0, 0.2);
+}
+
+function resumeAfterAd() {
+  CRAZY.adOpen = false;
+  state.paused = false;
+  fadeMaster(save.muted ? 0 : AUDIO.VOLUME, 0.4);
+  if (CRAZY.ready) CRAZY.sdk.game.gameplayStart();
+}
+
+/* Returns false when there is no SDK, so callers can fall through.
+   `settled` guards the callbacks: an SDK that fires both adError and
+   adFinished, or neither, must not double-grant or hang the game. */
+function requestCrazyAd(type, { onFinished, onError } = {}) {
+  if (!CRAZY.ready) return false;
+
+  let settled = false;
+  const settle = (fn, arg) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    resumeAfterAd();
+    fn?.(arg);
+  };
+
+  /* Guards the REQUEST only, never a playing ad. An adblocker can leave a
+     request hanging forever and the game must not be stuck behind an ad
+     that will never arrive — but a real interstitial runs 15-30s, so once
+     adStarted fires this is cancelled and the SDK drives the rest. */
+  const timeout = setTimeout(() => settle(onError, 'no-response'), 8000);
+
+  try {
+    CRAZY.sdk.ad.requestAd(type, {
+      adStarted: () => { clearTimeout(timeout); pauseForAd(); },
+      adFinished: () => settle(onFinished),
+      adError: (error) => settle(onError, error),
+    });
+  } catch (error) {
+    settle(onError, error);
+  }
+
+  return true;
+}
+
+/* The stone cracking is the natural break, so that is where the interstitial
+   goes. Gameplay pauses, the ad plays over the frozen tower, and Examine
+   mode opens once it clears — whether it finished, errored or timed out. */
+function fractureThenAd() {
+  musicCrumble();
+
+  const requested = requestCrazyAd('midgame', {
+    onFinished: () => finish('lost'),
+    onError: () => finish('lost'),
+  });
+
+  if (!requested) finish('lost');
 }
 
 /* ---------- BOOTSTRAP ---------- */
@@ -1695,6 +1811,7 @@ initInput();
 initShards();
 applyTheme(themeFor(LEVELS[levelIndex].pack), true);
 initAds();
+initCrazy();
 // Establish a fitted distance immediately; zoom is measured relative to
 // it, and syncSize() only reaches fitCamera() once a frame has drawn.
 fitCamera();
@@ -1708,6 +1825,8 @@ window.Carve = {
   toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
   applyTheme, themeState, rampColour, SIGNALS,
+  CRAZY, initCrazy, requestCrazyAd, fractureThenAd, pauseForAd, resumeAfterAd,
+  gameplayStart, gameplayStop, fadeMaster,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
   musicCrumble, musicProgress, fadeLayer, toggleMute,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,
