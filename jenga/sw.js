@@ -1,35 +1,22 @@
-/* Carve service worker — KG Studio
+/* Jenga Sweeper service worker — KG Studio
    ------------------------------------------------------------
    Every path here is RELATIVE. GitHub Pages serves the app from
-   /<repo>/, so an absolute '/index.html' would 404 in production.
+   /<repo>/, so an absolute '/index.html' would 404 in production. */
 
-   Carried over from the Jenga build, which is why it is network-first
-   rather than cache-first — see networkFirst() below for why that
-   distinction cost us once already. */
+const VERSION = 'v2';
+const SHELL_CACHE = `jenga-archive-shell-${VERSION}`;
+const RUNTIME_CACHE = `jenga-archive-runtime-${VERSION}`;
 
-const VERSION = 'v1';
-const SHELL_CACHE = `carve-shell-${VERSION}`;
-const RUNTIME_CACHE = `carve-runtime-${VERSION}`;
-
-/* The whole game, including the Collection. Gallery and catalogue are real
-   pages a player can land on, so they belong in the shell — not just the
-   root document. */
 const SHELL = [
   './',
   './index.html',
-  './carve.css',
-  './carve.js',
-  './shapes.js',
-  './themes.js',
-  './thumbs.js',
-  './gallery.html',
-  './gallery.js',
-  './privacy.html',
+  './style.css',
+  './game.js',
   './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/icon-maskable-512.png',
-  './icons/apple-touch-icon.png',
+  '../icons/icon-192.png',
+  '../icons/icon-512.png',
+  '../icons/icon-maskable-512.png',
+  '../icons/apple-touch-icon.png',
 ];
 
 // three.js is served with `access-control-allow-origin: *`, so these are
@@ -66,16 +53,11 @@ self.addEventListener('fetch', (event) => {
   // and quietly retain third-party responses.
   if (url.origin !== self.location.origin && url.hostname !== CDN_HOST) return;
 
-  /* A navigation resolves to the page itself when we have it — gallery.html
-     is a real destination, and falling every navigation back to index.html
-     would strand an offline player on the game screen when they asked for
-     their Collection. */
+  // A navigation always resolves to the app shell so a deep link or an
+  // offline launch still boots the game.
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(async () => {
-        const cached = await caches.match(request, { ignoreSearch: true });
-        return cached || caches.match('./index.html');
-      }),
+      fetch(request).catch(() => caches.match('./index.html')),
     );
     return;
   }
@@ -102,11 +84,7 @@ async function networkFirst(request) {
     if (response.ok) cache.put(request, response.clone());
     return response;
   } catch (error) {
-    /* Assets carry ?v= cache-busting queries, so an exact match misses once
-       a version bumps while offline. Fall back to the versionless copy
-       rather than failing the whole boot over a query string. */
-    const cached = await cache.match(request)
-      || await cache.match(request, { ignoreSearch: true });
+    const cached = await cache.match(request);
     if (cached) return cached;
     throw error;
   }

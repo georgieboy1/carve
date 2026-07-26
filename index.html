@@ -4,161 +4,102 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#fdf3f8">
-  <meta name="description" content="A cute 3D Jenga-Minesweeper puzzle. Pull the safe blocks, leave the mines standing.">
-  <title>Jenga Sweeper — KG Studio</title>
-
+  <title>Carve — KG Studio</title>
+  <meta name="description" content="Carve away the waste and reveal the sculpture hiding in the stone. 60 puzzles across ten collections.">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Jenga Sweeper">
+  <meta name="apple-mobile-web-app-title" content="Carve">
+  <!-- No CrazyGames SDK here: this is the open-web build, and the tag is the
+       ONE line that separates it from crazygames-release. carve.js keeps its
+       platform code, but every entry point checks window.CrazyGames first and
+       returns false, so without this tag the game falls through to AdSense.
+       That is the whole of "mutually exclusive ad stacks" — enforced at
+       runtime, so the two builds cannot drift apart in anything but this. -->
 
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="carve.css?v=5">
 </head>
 <body>
+  <div id="bg-a" class="bg"></div>
+  <div id="bg-b" class="bg"></div>
   <header id="hud">
-    <div id="hearts" role="status" aria-label="Lives remaining"></div>
+    <div id="hud-top">
+      <div id="stars" aria-label="Stars remaining"></div>
+      <div id="level-tag">
+        <span id="level-name">–</span>
+        <span id="pips" aria-hidden="true"></span>
+      </div>
+    </div>
 
     <div id="progress">
       <div id="progress-label">
-        <span>Blocks to pull</span>
-        <span id="safe-count" aria-live="polite">–</span>
+        <span>Blocks to carve</span>
+        <span id="left">–</span>
       </div>
-      <div id="progress-track">
-        <div id="progress-fill"></div>
-      </div>
-      <div id="integrity-track" role="img" aria-label="Foundation integrity">
-        <div id="integrity-fill"></div>
-      </div>
+      <div id="progress-track"><div id="progress-fill"></div></div>
     </div>
-
-    <button id="btn-help" type="button" aria-label="How to play">?</button>
   </header>
 
-  <!-- Portrait play area. Part 2 mounts the Three.js canvas here. -->
   <main id="stage"></main>
 
-  <div id="gesture-hint" hidden>Drag to spin &middot; Tap to pull</div>
+  <div id="hint">Drag to spin &middot; Tap to carve &middot; Hold to keep</div>
 
-  <footer id="brand"><b>KG</b> STUDIO</footer>
+  <div id="toast" role="status" aria-live="polite"></div>
 
-  <div id="help-scrim" hidden>
-    <div id="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
-      <h2 id="help-title">How to play</h2>
-      <p id="help-intro">Pull blocks out of the tower without hitting the mines hidden inside it.</p>
+  <!-- Examine mode: the only chrome left on screen while the sculpture turns. -->
+  <button id="examine-exit" type="button" aria-label="Done examining" hidden>&times;</button>
 
-      <ol id="help-steps">
-        <li>
-          <span class="step-num">1</span>
-          <div class="step-body">
-            <h3>Pull a block</h3>
-            <p><b>Tap</b> a block to pull it out. <b>Drag</b> anywhere to spin the tower &mdash; blocks hide on all four sides.</p>
-          </div>
-        </li>
+  <!-- Thumb-reachable, and labelled in words: an icon meaning three
+       different things is the wrong call for a working-memory problem. -->
+  <div id="controls">
+    <a id="gallery-link" class="pill" href="gallery.html">Collection</a>
+    <button id="display-btn" class="pill" type="button">Display</button>
+    <button id="mode-btn" class="pill" type="button">Mode</button>
+    <button id="hint-btn" class="pill" type="button">Hint</button>
+  </div>
 
-        <li>
-          <span class="step-num">2</span>
-          <div class="step-body">
-            <h3>Read the gap</h3>
-            <p>The number left behind counts the mines touching that block &mdash; including the layers <b>above and below</b> it. That&rsquo;s up to 8.</p>
-            <p class="step-tip"><b>Tap a number</b> to light up the blocks it&rsquo;s counting.</p>
-
-            <svg class="help-diagram" viewBox="0 0 208 100" role="img"
-                 aria-label="A three by three grid. The centre square is the gap you cleared, showing the number 3. The eight squares around it are its neighbours: three in the layer above, two beside it in the same layer, and three in the layer below.">
-              <g class="cell">
-                <rect x="4"  y="4"  width="36" height="26" rx="7"/>
-                <rect x="44" y="4"  width="36" height="26" rx="7"/>
-                <rect x="84" y="4"  width="36" height="26" rx="7"/>
-                <rect x="4"  y="37" width="36" height="26" rx="7"/>
-                <rect x="84" y="37" width="36" height="26" rx="7"/>
-                <rect x="4"  y="70" width="36" height="26" rx="7"/>
-                <rect x="44" y="70" width="36" height="26" rx="7"/>
-                <rect x="84" y="70" width="36" height="26" rx="7"/>
-              </g>
-
-              <rect class="gap" x="44" y="37" width="36" height="26" rx="7"/>
-              <text class="gap-num" x="62" y="51">3</text>
-
-              <text class="row-label" x="128" y="21">layer above</text>
-              <text class="row-label" x="128" y="54">same layer</text>
-              <text class="row-label" x="128" y="87">layer below</text>
-            </svg>
-          </div>
-        </li>
-
-        <li>
-          <span class="step-num">3</span>
-          <div class="step-body">
-            <h3>Mark your suspects</h3>
-            <p><b>Press and hold</b> a block to flag it. Flagged blocks are locked, so you can&rsquo;t lose a heart to a mis-tap. Hold again to unflag.</p>
-          </div>
-        </li>
-
-        <li>
-          <span class="step-num">4</span>
-          <div class="step-body">
-            <h3>Keep it standing</h3>
-            <p>A layer holds as long as <b>two blocks</b> are left, or just the <b>middle one</b>. Leave a single edge block propping up a layer and it turns <b>critical</b>.</p>
-            <p class="step-tip">Two critical layers <b>stacked next to each other</b> bring the tower down &mdash; and that costs a heart too.</p>
-
-            <svg class="help-diagram stability" viewBox="0 0 208 100" role="img"
-                 aria-label="Three examples. Two blocks left is stable. The middle block alone is stable. A single edge block alone is critical.">
-              <g class="cell">
-                <rect x="4"  y="4"  width="36" height="26" rx="7"/>
-                <rect x="84" y="4"  width="36" height="26" rx="7"/>
-                <rect x="44" y="37" width="36" height="26" rx="7"/>
-                <rect class="bad" x="4" y="70" width="36" height="26" rx="7"/>
-              </g>
-              <rect class="gap" x="44" y="4"  width="36" height="26" rx="7"/>
-              <rect class="gap" x="4"  y="37" width="36" height="26" rx="7"/>
-              <rect class="gap" x="84" y="37" width="36" height="26" rx="7"/>
-              <rect class="gap" x="44" y="70" width="36" height="26" rx="7"/>
-              <rect class="gap" x="84" y="70" width="36" height="26" rx="7"/>
-
-              <text class="row-label ok"   x="128" y="21">stable</text>
-              <text class="row-label ok"   x="128" y="54">stable</text>
-              <text class="row-label warn" x="128" y="87">critical</text>
-            </svg>
-          </div>
-        </li>
-
-        <li>
-          <span class="step-num">5</span>
-          <div class="step-body">
-            <h3>Mind your hearts</h3>
-            <p>Mines and collapses each cost a heart, and the tower leans further every time. Lose all three and the run ends.</p>
-          </div>
-        </li>
-      </ol>
-
-      <p id="help-goal"></p>
-
-      <button id="btn-help-close" class="btn btn-primary" type="button">Got it</button>
+  <!-- Two display settings that used to sit as permanent pills. They are
+       changed rarely, so they live behind one control instead of eating the
+       thumb zone every second of play. -->
+  <div id="sheet" hidden>
+    <div id="sheet-card" role="dialog" aria-modal="true" aria-label="Display settings">
+      <h3>Display</h3>
+      <button id="clue-btn" class="row" type="button"><span>Clues</span><b>Chips</b></button>
+      <button id="mute-btn" class="row" type="button"><span>Sound</span><b>On</b></button>
+      <button id="focus-btn" class="row" type="button"><span>Tone</span><b>Off</b></button>
+      <p class="sheet-note">Pulse plays through anything. Binaural needs headphones &mdash;
+         the beat only exists between two ears. Ambience, not a health tool.</p>
+      <button id="sheet-close" class="btn btn-ghost" type="button">Done</button>
     </div>
   </div>
 
-  <div id="modal-scrim" hidden>
-    <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div id="modal-emoji">💔</div>
-      <h2 id="modal-title">Out of hearts</h2>
-      <p id="modal-body"></p>
-
-      <button id="btn-ad" class="btn btn-primary" type="button"></button>
-      <button id="btn-restart" class="btn btn-ghost" type="button">Start over</button>
-
-      <label class="switch">
-        <input type="checkbox" id="hard-mode">
-        <span class="switch-track"><span class="switch-thumb"></span></span>
-        <span class="switch-text">
-          Hard mode
-          <small>Play with no numbers</small>
-        </span>
-      </label>
+  <div id="zen-sheet" hidden>
+    <div id="zen-card" role="dialog" aria-modal="true" aria-labelledby="zen-title">
+      <div class="zen-icon">&#9670;</div>
+      <h3 id="zen-title">Zen mode</h3>
+      <p>Carve with no limits and nothing to lose &mdash; unlimited hints, no
+         cracked stone, no ads. Sculptures finished in Zen join your
+         collection without stars.</p>
+      <button id="zen-buy" class="btn" type="button">Unlock Zen</button>
+      <p class="zen-note">Included free with any pack you buy.</p>
+      <button id="zen-close" class="btn btn-ghost" type="button">Not now</button>
     </div>
   </div>
 
-  <!-- Three.js ships ESM-only. The import map lets game.js say `from 'three'`
-       and keeps the addons path ready for Part 4's RoundedBoxGeometry. -->
+  <div id="banner" hidden>
+    <div id="banner-card">
+      <div id="banner-emoji">✨</div>
+      <h2 id="banner-title">Pyramid revealed</h2>
+      <div id="banner-stars" hidden></div>
+      <p id="banner-body"></p>
+      <button id="ad-btn" class="btn" type="button" hidden></button>
+      <button id="again" class="btn" type="button">Next in pack</button>
+      <button id="pick" class="btn btn-ghost" type="button">Choose a level</button>
+    </div>
+  </div>
+
+  <footer id="brand"><b>KG</b> STUDIO <a href="privacy.html">Privacy</a></footer>
+
   <script type="importmap">
   {
     "imports": {
@@ -167,7 +108,6 @@
     }
   }
   </script>
-
-  <script type="module" src="game.js"></script>
+  <script type="module" src="carve.js?v=14"></script>
 </body>
 </html>

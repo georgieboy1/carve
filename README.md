@@ -83,14 +83,20 @@ This uses Google's **H5 Games Ads** (the AdSense Ad Placement API) rather
 than plain AdSense display units, because it's the product that supports
 *rewarded* ads — a display unit has no reward callback to hang a revive on.
 
-Before shipping real ads you'll also need an AdSense account with this site
-approved, a privacy policy, and a consent flow for EU/UK traffic. None of
-that is in the repo yet.
+Before shipping real ads you'll still need an AdSense account with this site
+approved. The privacy policy is now written (`privacy.html`) and the consent
+gate is built: `initAds()` refuses to inject the ad script unless consent has
+been stored, so the unsafe state isn't reachable by forgetting. No banner
+shows today because `ADS.publisherId` is empty and nothing loads either way.
 
 ## Deploying
 
 The app is fully static — any host works. All paths are relative, so
 serving from `/<repo>/` needs no changes.
+
+**The root serves Carve.** Jenga Sweeper is preserved in full at `jenga/`
+and reachable at `/<repo>/jenga/` — it still runs, with its own service
+worker and manifest, it just isn't the front door any more.
 
 It's committed locally on `main` but **not published yet**. When you're
 ready, create an empty repo named `jenga-sweeper` at

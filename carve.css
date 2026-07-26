@@ -1,4 +1,4 @@
-/* Carve prototype — KG Studio. Self-contained so it can't disturb the
+/* Carve — KG Studio. Self-contained so it can't disturb the
    shipped game's stylesheet. Palette matches the main build. */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -156,6 +156,18 @@ body {
 }
 
 #brand b { font-weight: 800; color: #a1889c; }
+
+/* The brand line ignores pointer events so it never eats a drag near the
+   bottom of the stage — the link has to opt back in or it is decoration. */
+#brand a {
+  pointer-events: auto;
+  margin-left: .55em;
+  color: #bda9b8;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(189,169,184,.45);
+}
+
+#brand a:hover { color: #a1889c; }
 
 /* Bottom-right thumb zone, stacked so neither is a stretch one-handed. */
 #controls {

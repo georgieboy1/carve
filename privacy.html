@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fdf3f8">
+  <title>Carve — Privacy — KG Studio</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root { --ink: #4a3b49; --ink-soft: #9c8a97; --mint: #7fb2a6; }
+
+    body {
+      min-height: 100dvh;
+      background:
+        radial-gradient(110% 40% at 50% 4%, #fffdfe 0%, #fdf3f8 45%, transparent 100%),
+        linear-gradient(180deg, #fdf3f8 0%, #f6e9f3 70%, #eddfec 100%);
+      background-attachment: fixed;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.62;
+      padding: 22px 18px calc(40px + env(safe-area-inset-bottom));
+    }
+
+    main { max-width: 34rem; margin: 0 auto; }
+
+    a { color: var(--mint); }
+
+    #back {
+      display: inline-block; margin-bottom: 18px;
+      font-size: 12.5px; font-weight: 600; color: var(--mint); text-decoration: none;
+    }
+
+    h1 { font-size: 21px; font-weight: 800; letter-spacing: -.01em; margin-bottom: 4px; }
+
+    .updated {
+      font-size: 11px; font-weight: 700; letter-spacing: .06em;
+      text-transform: uppercase; color: var(--ink-soft); margin-bottom: 22px;
+    }
+
+    h2 {
+      font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+      color: #a1889c; margin: 26px 0 7px;
+    }
+
+    p, li { font-size: 14.5px; margin-bottom: 10px; }
+    ul { padding-left: 1.15rem; }
+    li::marker { color: var(--ink-soft); }
+
+    .lede {
+      font-size: 15.5px; font-weight: 600;
+      padding: 13px 15px; border-radius: 14px;
+      background: rgba(255,255,255,.6);
+    }
+
+    footer {
+      margin-top: 30px; font-size: 10px; letter-spacing: .3em; text-indent: .3em;
+      text-align: center; color: #bda9b8;
+    }
+    footer b { font-weight: 800; color: #a1889c; }
+  </style>
+</head>
+<body>
+  <main>
+    <a id="back" href="./">&larr; Back to carving</a>
+
+    <h1>Privacy</h1>
+    <p class="updated">Last updated 25 July 2026</p>
+
+    <p class="lede">Carve has no accounts, no analytics and no tracking. Your
+      progress is stored on your own device and never sent to us — we do not
+      operate a server that could receive it.</p>
+
+    <h2>What is stored on your device</h2>
+    <p>The game saves to your browser's <b>local storage</b>, which stays on
+      your device and is readable only by this site:</p>
+    <ul>
+      <li>Which sculptures you have carved, and your best star score for each</li>
+      <li>Which level you were last playing</li>
+      <li>Which collections you have unlocked, and whether Zen mode is unlocked</li>
+      <li>Your sound, tone and clue-display preferences</li>
+    </ul>
+    <p>Clearing your browser data for this site erases all of it. There is no
+      copy anywhere else, so that erasure is permanent and we cannot restore it.</p>
+
+    <h2>What we collect</h2>
+    <p>Nothing. There is no analytics script, no tag manager, no advertising
+      identifier, no fingerprinting and no error-reporting service. We do not
+      know how many people play, or who they are.</p>
+
+    <h2>Other services the page contacts</h2>
+    <p>The 3D engine (three.js) loads from <b>jsDelivr</b>, a public code
+      network. Your browser's request tells jsDelivr your IP address and
+      browser version, as any web request does. jsDelivr states that it does
+      not log personal data or set cookies — see
+      <a href="https://www.jsdelivr.com/terms/privacy-policy-jsdelivr-net"
+         rel="noopener noreferrer" target="_blank">their privacy policy</a>.
+      We receive nothing from this.</p>
+
+    <h2>Advertising</h2>
+    <p><b>There are currently no ads in Carve, and no advertising code runs.</b>
+      If that changes, the ad script will not load until you have been asked
+      and have agreed — the game is built so that consent is required before
+      any advertising request is made, not after. This section will be updated
+      before any such change goes live.</p>
+
+    <h2>Purchases</h2>
+    <p>Collection unlocks are currently simulated locally for testing and take
+      no payment. No payment details are requested, handled or stored. If real
+      purchasing is added, it will run through a payment provider who will
+      handle card details directly, and this page will say who.</p>
+
+    <h2>Children</h2>
+    <p>Carve is suitable for all ages. Because we collect no data at all, we
+      collect none from children either.</p>
+
+    <h2>Playing on other platforms</h2>
+    <p>A separate build of Carve runs on CrazyGames. That version uses their
+      SDK for saved progress and ads, so their privacy policy governs it, not
+      this one. This page covers the version you are reading it on.</p>
+
+    <h2>Your rights</h2>
+    <p>Rights of access, correction, erasure and portability apply to data a
+      company holds about you. We hold none, so there is nothing for us to
+      return or delete. The data on your device is already entirely under your
+      control, and the game has an export option so you can keep your own copy.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy: <a href="mailto:kacy.george2@gmail.com">kacy.george2@gmail.com</a>.</p>
+
+    <footer><b>KG</b> STUDIO</footer>
+  </main>
+</body>
+</html>

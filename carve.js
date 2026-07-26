@@ -1,5 +1,5 @@
 /* ============================================================
-   CARVE — prototype
+   CARVE
    KG Studio
    ------------------------------------------------------------
    Proving the pivot: start from a solid mass of cubes and chip away the
@@ -1390,10 +1390,32 @@ const toCollection = () => { location.href = 'gallery.html'; };
 
 const ADS = { publisherId: '', testMode: true, ready: false, showAd: null };
 
+/* Loading the AdSense script sets third-party cookies, and GDPR/ePrivacy
+   want consent BEFORE that happens, not after. Rather than remembering to
+   add a banner the day we paste in a publisher id, the gate lives here
+   permanently: no consent, no script, no exceptions.
+
+   Today publisherId is empty so nothing loads either way and no banner is
+   shown — asking for consent to something that never fires is its own dark
+   pattern. The moment an id is set, this starts demanding an answer. */
+const CONSENT_KEY = 'carve.consent';
+
+function consentState() {
+  try { return localStorage.getItem(CONSENT_KEY); } catch { return null; }
+}
+
+/* Only EU/UK visitors legally need the prompt, but we cannot detect that
+   client-side without a geo lookup that is itself a privacy problem. So we
+   ask everyone. It is one tap, once. */
+function needsConsent() {
+  return !!ADS.publisherId && consentState() === null;
+}
+
 function initAds() {
   // Never run a second ad stack alongside the platform's own.
   if (window.CrazyGames?.SDK) return;
   if (!ADS.publisherId) return;
+  if (consentState() !== 'granted') return;
 
   const script = document.createElement('script');
   script.async = true;
@@ -1408,6 +1430,22 @@ function initAds() {
   window.adBreak = window.adConfig = (o) => { window.adsbygoogle.push(o); };
   window.adConfig({ preloadAdBreaks: 'on', sound: 'off' });
   ADS.ready = true;
+}
+
+/* Relative path, so it also registers correctly from a GitHub Pages
+   subpath. Service workers need https or localhost — over file:// this
+   silently no-ops, which is fine. Not registered inside the CrazyGames
+   iframe: the platform serves the game itself and a worker of ours would
+   be competing with theirs for the same requests. */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  if (window.CrazyGames?.SDK) return;
+
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((error) => {
+      console.warn('Service worker registration failed:', error);
+    });
+  });
 }
 
 function prepareRewardedAd() {
@@ -2045,6 +2083,7 @@ initShards();
 applyTheme(themeFor(LEVELS[levelIndex].pack), true);
 initAds();
 initCrazy();
+registerServiceWorker();
 // Establish a fitted distance immediately; zoom is measured relative to
 // it, and syncSize() only reaches fitCamera() once a frame has drawn.
 fitCamera();
@@ -2055,6 +2094,7 @@ window.Carve = {
   carve, toggleMark, pick, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
+  initAds, consentState, needsConsent, registerServiceWorker,
   toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
   applyTheme, themeState, rampColour, SIGNALS,
