@@ -1715,32 +1715,46 @@ const FOCUS = {
   carrier: 200,      // Hz. Low carriers are where binaural perception works
   beat: 40,          // Hz. Difference for binaural, modulation rate for pulse
   level: 0.05,       // sits well under the music
+  CROSSFADE: 1.2,    // seconds; the two timbres overlap for this long
   BINAURAL_HONEST_MAX: 30,   // above this the binaural mechanism falls away
 };
 
-const focus = { gain: null, nodes: [], mode: 'off' };
+/* Each mode is its own VOICE with its own gain, so two can overlap. A single
+   shared gain could only hard-cut between timbres — the outgoing tone has to
+   still be sounding while the incoming one rises, or it is a jump cut with a
+   fade painted over it. */
+const focus = { bus: null, voices: [], mode: 'off' };
 
-function stopFocus() {
-  for (const node of focus.nodes) {
-    try { node.stop?.(); node.disconnect(); } catch { /* already gone */ }
+/* Equal power, not linear. Two different timbres are uncorrelated, so linear
+   ramps sum to a dip in loudness right at the midpoint of the swap — the
+   classic crossfade hole. cos/sin keeps gain_in^2 + gain_out^2 = 1, so the
+   perceived level stays flat across the handover. */
+function equalPowerRamp(param, peak, seconds, direction) {
+  const steps = 48;
+  const curve = new Float32Array(steps);
+
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    curve[i] = peak * (direction === 'out'
+      ? Math.cos((t * Math.PI) / 2)
+      : Math.sin((t * Math.PI) / 2));
   }
-  focus.nodes = [];
+
+  const now = audio.ctx.currentTime;
+  param.cancelScheduledValues(now);
+  param.setValueAtTime(param.value, now);
+  param.setValueCurveAtTime(curve, now, seconds);
 }
 
-function startFocus(mode) {
-  if (!audio.ready) return;
-  stopFocus();
-  focus.mode = mode;
-  if (mode === 'off') return;
-
+function buildVoice(mode) {
   const ctx = audio.ctx;
-  if (!focus.gain) {
-    focus.gain = ctx.createGain();
-    focus.gain.gain.value = 0;
-    focus.gain.connect(audio.master);
-  }
-
   const { carrier, beat } = FOCUS;
+
+  const gain = ctx.createGain();
+  gain.gain.value = 0;
+  gain.connect(focus.bus);
+
+  const nodes = [];
 
   if (mode === 'binaural') {
     // The beat is the DIFFERENCE, so each ear is offset by half of it.
@@ -1752,9 +1766,9 @@ function startFocus(mode) {
       const panner = ctx.createStereoPanner();
       panner.pan.value = pan;
 
-      osc.connect(panner).connect(focus.gain);
+      osc.connect(panner).connect(gain);
       osc.start();
-      focus.nodes.push(osc, panner);
+      nodes.push(osc, panner);
     }
   } else {
     // Modulation actually in the signal: carrier * (0.5 + 0.5 * sin(beat)).
@@ -1773,17 +1787,57 @@ function startFocus(mode) {
     lfoAmount.gain.value = 0.5;
 
     lfo.connect(lfoAmount).connect(depth.gain);
-    osc.connect(depth).connect(focus.gain);
+    osc.connect(depth).connect(gain);
     osc.start();
     lfo.start();
-    focus.nodes.push(osc, lfo, lfoAmount, depth);
+    nodes.push(osc, lfo, lfoAmount, depth);
   }
 
-  const now = ctx.currentTime;
-  focus.gain.gain.cancelScheduledValues(now);
-  focus.gain.gain.setValueAtTime(focus.gain.gain.value, now);
-  focus.gain.gain.linearRampToValueAtTime(FOCUS.level, now + 1.5);
+  return { mode, gain, nodes, retiring: false };
 }
+
+/* Fades a voice out and tears it down afterwards. `retiring` makes this
+   idempotent: hammering the toggle must not re-ramp a voice that is already
+   on its way out, or stack teardown timers on it. */
+function retireVoice(voice, seconds) {
+  if (voice.retiring) return;
+  voice.retiring = true;
+
+  equalPowerRamp(voice.gain.gain, voice.gain.gain.value, seconds, 'out');
+
+  setTimeout(() => {
+    for (const node of voice.nodes) {
+      try { node.stop?.(); node.disconnect(); } catch { /* already gone */ }
+    }
+    try { voice.gain.disconnect(); } catch { /* already gone */ }
+    focus.voices = focus.voices.filter((v) => v !== voice);
+  }, seconds * 1000 + 80);
+}
+
+function stopFocus(seconds = FOCUS.CROSSFADE) {
+  for (const voice of focus.voices) retireVoice(voice, seconds);
+}
+
+function startFocus(mode, seconds = FOCUS.CROSSFADE) {
+  if (!audio.ready) return;
+  focus.mode = mode;
+
+  if (!focus.bus) {
+    focus.bus = audio.ctx.createGain();
+    focus.bus.gain.value = 1;
+    focus.bus.connect(audio.master);
+  }
+
+  // Old voices start fading the moment the new one starts rising, so the
+  // two overlap rather than butting up against each other.
+  stopFocus(seconds);
+  if (mode === 'off') return;
+
+  const voice = buildVoice(mode);
+  focus.voices.push(voice);
+  equalPowerRamp(voice.gain.gain, FOCUS.level, seconds, 'in');
+}
+
 
 function cycleFocus() {
   const order = ['off', 'pulse', 'binaural'];
