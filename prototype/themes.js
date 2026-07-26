@@ -84,6 +84,16 @@ export const THEMES = {
     ramp: ['#c4d8e6', '#bad2e4', '#b1cce1', '#a9c6de'],
     bg: ['#eff6fb', '#e4eff7', '#d9e7f1'],
   },
+  numerals: {
+    name: 'Terracotta',
+    ramp: ['#e6bfae', '#dfb7a6', '#d8b09f', '#d0a998'],
+    bg: ['#fbf1eb', '#f3e6de', '#ebdbd1'],
+  },
+  alphabet: {
+    name: 'Inkwell',
+    ramp: ['#c6c4dc', '#bdbcd8', '#b4b4d4', '#acadd0'],
+    bg: ['#f2f1f9', '#e8e7f3', '#dedded'],
+  },
 };
 
 export const DEFAULT_THEME = THEMES['first-cuts'];

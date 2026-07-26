@@ -14,6 +14,17 @@
 
 const S = (name, category, layers) => ({ name, category, layers });
 
+/* A standing glyph. Rows are written TOP-DOWN the way you'd draw them and
+   extruded `depth` deep, which saves writing every letter out twice.
+
+   The catch worth knowing: a glyph has to be 4-connected in the X-Y plane.
+   Diagonals are not support, so a classic pointed V or a bitmap X floats
+   apart and the validator rejects it. Strokes are stepped with a shared
+   cell at every corner instead. */
+const G = (name, category, depth, rows) =>
+  S(name, category, [...rows].reverse().map((row) => Array(depth).fill(row)));
+
+
 export const SHAPES = [
   /* ---------- Starters (kept from the first pass) ---------- */
   S('Pillar', 'architecture', [
@@ -391,6 +402,47 @@ export const SHAPES = [
     ['-...-', '..#..', '.###.', '..#..', '-...-'],
     ['-...-', '.....', '..#..', '.....', '-...-'],
   ]),
+  /* ---------- Numerals ---------- */
+  G('One', 'numerals', 2, [
+    '.#.', '##.', '.#.', '.#.', '.#.', '.#.', '###',
+  ]),
+
+  G('Two', 'numerals', 2, [
+    '.####', '##..#', '....#', '..###', '.##..', '##...', '#####',
+  ]),
+
+  G('Three', 'numerals', 2, [
+    '#####', '#...#', '....#', '.####', '....#', '#...#', '#####',
+  ]),
+
+  G('Four', 'numerals', 2, [
+    '...#.', '..##.', '##.#.', '#..#.', '#####', '...#.', '...#.',
+  ]),
+
+  G('Five', 'numerals', 2, [
+    '#####', '#....', '#####', '....#', '....#', '##..#', '.####',
+  ]),
+
+  /* ---------- Alphabet: the packs spells CARVE ---------- */
+  G('Letter C', 'letters', 2, [
+    '.###.', '##.##', '#....', '#....', '#....', '##.##', '.###.',
+  ]),
+
+  G('Letter A', 'letters', 2, [
+    '.###.', '##.##', '#...#', '#####', '#...#', '#...#', '#...#',
+  ]),
+
+  G('Letter R', 'letters', 2, [
+    '####.', '#...#', '#..##', '####.', '#..#.', '#..#.', '#..#.',
+  ]),
+
+  G('Letter V', 'letters', 2, [
+    '#...#', '#...#', '#...#', '#...#', '##.##', '.###.', '..#..',
+  ]),
+
+  G('Letter E', 'letters', 2, [
+    '#####', '#....', '#....', '####.', '#....', '#....', '#####',
+  ]),
 ];
 
 /* ---------- parse ---------- */
@@ -511,6 +563,10 @@ export const PACKS = [
     shapes: ['Vase', 'Bench', 'Anchor', 'Cross', 'Crescent moon'] },
   { id: 'voyage', name: 'Voyage', free: false,
     shapes: ['Galleon', 'Locomotive', 'Rocketship', 'Hot air balloon', 'Submarine'] },
+  { id: 'numerals', name: 'Numerals', free: false,
+    shapes: ['One', 'Two', 'Three', 'Four', 'Five'] },
+  { id: 'alphabet', name: 'Alphabet', free: false,
+    shapes: ['Letter C', 'Letter A', 'Letter R', 'Letter V', 'Letter E'] },
 ];
 
 export const byName = new Map(SHAPES.map((s) => [s.name, s]));

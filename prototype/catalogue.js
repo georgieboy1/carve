@@ -17,7 +17,12 @@ import { themeForShape } from './themes.js';
 
 const grid = document.getElementById('grid');
 
-const rows = SHAPES.map((shape) => {
+// New collections first, purely so they are easy to eyeball in review.
+const ORDER = ['numerals','letters'];
+const ordered = [...SHAPES].sort((a,b) =>
+  (ORDER.indexOf(b.category) - ORDER.indexOf(a.category)));
+
+const rows = ordered.map((shape) => {
   const { cells, grid: g } = parse(shape);
   const report = validate(shape);
   const ramp = themeForShape(shape.name).ramp;

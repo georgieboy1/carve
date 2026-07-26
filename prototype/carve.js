@@ -66,8 +66,8 @@ const canPlay = (i) => ownsPack(packOf(i));
      - or it can be unlocked on its own
 
    Plus one free run, because nobody should be asked to buy a feel they have
-   never felt. The genuine accessibility settings — clue display and glyph
-   set — stay free forever and are NOT part of this gate. */
+   never felt. The genuine accessibility setting — clue display mode —
+   stays free forever and is NOT part of this gate. */
 const PAID_PACKS = PACKS.filter((p) => !p.free).map((p) => p.id);
 
 const hasZen = () =>
@@ -96,7 +96,6 @@ const blankSave = () => ({
   best: {},              // level name -> { stars, slips, hints, mode, at }
   owned: PACKS.filter((p) => p.free).map((p) => p.id),
   clueMode: 'chips',
-  glyphs: 'numbers',     // numbers | letters | shapes
   mode: 'scored',        // scored | zen
   zenUnlocked: false,
   zenTrialUsed: false,
@@ -291,7 +290,6 @@ const state = {
   wasteTotal: 0, wasteLeft: 0,
   status: 'playing',
   clueMode: save.clueMode,
-  glyphs: save.glyphs || 'numbers',
   mode: save.mode || 'scored',
   hintsLeft: CONFIG.HINTS,
   revivesUsed: 0,
@@ -718,94 +716,9 @@ function texture(cacheKey, draw) {
 const font = (size, weight = 800) =>
   `${weight} ${size}px -apple-system, "Segoe UI", system-ui, sans-serif`;
 
-/* ---------- GLYPH SETS ----------
-   The clue is always "how many of my six neighbours are sculpture", 0-6.
-   How that count is DRAWN is a separate choice:
-
-     numbers  the default
-     letters  A-G, for players who read letters more comfortably than digits
-     shapes   seven distinct silhouettes, which stay tellable apart without
-              relying on reading or on colour at all
-
-   Shapes are drawn rather than typed. Font glyphs for circles and stars are
-   wildly inconsistent across platforms, and half of them are emoji on some
-   devices — the one place we cannot afford a surprise. */
-
-const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
-
-function drawGlyphShape(ctx, size, n, colour) {
-  const cx = size / 2;
-  const cy = size * 0.52;
-  const r = size * 0.21;
-
-  ctx.fillStyle = colour;
-  ctx.strokeStyle = colour;
-  ctx.lineWidth = size * 0.075;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-
-  switch (n) {
-    case 0:                                        // ring
-      ctx.arc(cx, cy, r * 0.82, 0, Math.PI * 2);
-      ctx.stroke();
-      return;
-    case 1:                                        // dot
-      ctx.arc(cx, cy, r * 0.62, 0, Math.PI * 2);
-      ctx.fill();
-      return;
-    case 2:                                        // triangle
-      polygon(ctx, cx, cy, r, 3, -Math.PI / 2);
-      ctx.fill();
-      return;
-    case 3:                                        // square
-      ctx.rect(cx - r * 0.78, cy - r * 0.78, r * 1.56, r * 1.56);
-      ctx.fill();
-      return;
-    case 4:                                        // diamond
-      polygon(ctx, cx, cy, r, 4, 0);
-      ctx.fill();
-      return;
-    case 5:                                        // pentagon
-      polygon(ctx, cx, cy, r, 5, -Math.PI / 2);
-      ctx.fill();
-      return;
-    default:                                       // six-point star
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-      }
-      ctx.stroke();
-  }
-}
-
-function polygon(ctx, cx, cy, r, sides, rotation) {
-  for (let i = 0; i < sides; i++) {
-    const a = rotation + (i / sides) * Math.PI * 2;
-    const px = cx + Math.cos(a) * r;
-    const py = cy + Math.sin(a) * r;
-    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-  }
-  ctx.closePath();
-}
-
 /* CHIP: small, opaque, high contrast. Easiest to read one at a time. */
-/* Every texture is cached per glyph set, so switching sets mid-level is
-   instant and never redraws a canvas twice. */
-function paintGlyph(ctx, size, n, colour) {
-  if (state.glyphs === 'shapes') return drawGlyphShape(ctx, size, n, colour);
-
-  const text = state.glyphs === 'letters' ? LETTERS[n] : String(n);
-  ctx.fillStyle = colour;
-  ctx.font = font(size * 0.46);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, size / 2, size * 0.53);
-}
-
 function digitTexture(n) {
-  return texture(`chip${state.glyphs}${n}`, (ctx, size) => {
+  return texture(`chip${n}`, (ctx, size) => {
     const pad = size * 0.1;
     ctx.shadowColor = 'rgba(74,59,73,0.32)';
     ctx.shadowBlur = size * 0.08;
@@ -820,44 +733,30 @@ function digitTexture(n) {
     ctx.strokeStyle = DIGIT_COLORS[n];
     ctx.stroke();
 
-    paintGlyph(ctx, size, n, DIGIT_COLORS[n]);
+    ctx.fillStyle = DIGIT_COLORS[n];
+    ctx.font = font(size * 0.46);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n, size / 2, size * 0.53);
   });
 }
 
-/* GHOST: block-sized and translucent, so a clue reads as the socket the
-   cube left behind rather than a sticker floating in front of it. Thirty
-   of these sit far quieter than thirty chips. */
+/* GHOST: block-sized and translucent, so a clue reads as the socket the cube
+   left behind rather than a sticker floating in front of it. */
 function ghostTexture(n) {
-  return texture(`ghost${state.glyphs}${n}`, (ctx, size) => {
-    if (state.glyphs === 'shapes') {
-      // White underlay first so the silhouette survives on any pastel.
-      ctx.save();
-      ctx.translate(size / 2, size * 0.52);
-      ctx.scale(1.34, 1.34);
-      ctx.translate(-size / 2, -size * 0.52);
-      drawGlyphShape(ctx, size, n, 'rgba(255,255,255,0.92)');
-      ctx.restore();
-      ctx.save();
-      ctx.translate(size / 2, size * 0.52);
-      ctx.scale(1.3, 1.3);
-      ctx.translate(-size / 2, -size * 0.52);
-      drawGlyphShape(ctx, size, n, DIGIT_COLORS[n]);
-      ctx.restore();
-      return;
-    }
-
-    const text = state.glyphs === 'letters' ? LETTERS[n] : String(n);
+  return texture(`ghost${n}`, (ctx, size) => {
     ctx.font = font(size * 0.82);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = size * 0.085;
     ctx.strokeStyle = 'rgba(255,255,255,0.92)';
     ctx.lineJoin = 'round';
-    ctx.strokeText(text, size / 2, size * 0.54);
+    ctx.strokeText(n, size / 2, size * 0.54);
     ctx.fillStyle = DIGIT_COLORS[n];
-    ctx.fillText(text, size / 2, size * 0.54);
+    ctx.fillText(n, size / 2, size * 0.54);
   });
 }
+
 
 /* The cavity a carved cube leaves is exactly one cube wide, so the clue can
    simply sit at its centre - no need for the gap-mouth maths the Jenga
@@ -951,18 +850,6 @@ function unlockZen() {
   ui.zenSheet.hidden = true;
   updateHUD();
   toast('Zen unlocked — carve as long as you like');
-}
-
-function cycleGlyphs() {
-  const order = ['numbers', 'letters', 'shapes'];
-  state.glyphs = order[(order.indexOf(state.glyphs) + 1) % order.length];
-  save.glyphs = state.glyphs;
-  writeSave();
-
-  // Existing sprites point at the old set's textures; re-point them.
-  refreshClues();
-  updateHUD();
-  toast(`Clues shown as ${state.glyphs}`);
 }
 
 function cycleClueMode() {
@@ -1383,7 +1270,6 @@ function updateHUD() {
   ui.pips.innerHTML = pips;
 
   ui.clueBtn.querySelector('b').textContent = state.clueMode;
-  ui.glyphBtn.querySelector('b').textContent = state.glyphs;
   ui.muteBtn.querySelector('b').textContent = save.muted ? 'Off' : 'On';
   ui.hintBtn.textContent = isZen() ? 'Hint · ∞' : `Hint · ${state.hintsLeft}`;
   ui.hintBtn.disabled = !isZen() && state.hintsLeft <= 0;
@@ -1758,14 +1644,12 @@ ui.pips = document.getElementById('pips');
 ui.again = document.getElementById('again');
 ui.pick = document.getElementById('pick');
 ui.adBtn = document.getElementById('ad-btn');
-ui.glyphBtn = document.getElementById('glyph-btn');
 ui.modeBtn = document.getElementById('mode-btn');
 ui.stars = document.getElementById('stars');
 ui.bannerStars = document.getElementById('banner-stars');
 
 ui.adBtn.addEventListener('click', watchAd);
 ui.clueBtn.addEventListener('click', cycleClueMode);
-ui.glyphBtn.addEventListener('click', cycleGlyphs);
 ui.muteBtn = document.getElementById('mute-btn');
 ui.muteBtn.addEventListener('click', toggleMute);
 ui.modeBtn.addEventListener('click', toggleMode);
@@ -1821,7 +1705,7 @@ window.Carve = {
   carve, toggleMark, pick, validateLevel,
   cycleClueMode, useHint, findHint, refreshClues, clueSatisfied,
   loadLevel, nextInPack, retryLevel, toCollection, watchAd, grantRevive, ADS,
-  cycleGlyphs, toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
+  toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
   applyTheme, themeState, rampColour, SIGNALS,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
