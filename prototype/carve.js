@@ -258,6 +258,10 @@ function importSave(code) {
   }
 }
 
+/* Set when the Collection hands us a level through the URL. A deliberate
+   choice must outrank any stored progress, cloud or local. */
+let cameFromLink = false;
+
 let levelIndex = Math.min(Math.max(save.level | 0, 0), LEVELS.length - 1);
 let SHAPE = LEVELS[levelIndex];
 
@@ -1714,8 +1718,14 @@ async function initCrazy() {
     CRAZY.sdk = sdk;
     CRAZY.ready = true;
 
-    // Adopt cloud progress before the player gets far into level one.
-    if (syncPlatformSave()) loadLevel(save.level | 0);
+    /* Adopt cloud progress — but NEVER yank a player out of a level they
+       explicitly picked. The Collection hands the level over in the URL,
+       and the SDK resolves a second later; without this guard every tile
+       on the shelf opened whatever level the save happened to hold. */
+    const adopted = syncPlatformSave();
+    if (adopted && !cameFromLink && (save.level | 0) !== levelIndex) {
+      loadLevel(save.level | 0);
+    }
 
     sdk.game.gameplayStart();
   } catch (error) {
@@ -1842,9 +1852,14 @@ document.addEventListener('keydown', (e) => {
 
 /* The collection is the level select, so it hands the chosen level back
    through the URL. loadLevel() re-checks ownership before honouring it. */
-const requested = Number(new URLSearchParams(location.search).get('level'));
+/* Number(null) is 0, and 0 is a perfectly valid level — so reading the
+   param straight through Number() made every no-param load look like an
+   explicit request for level 0, and quietly broke resume-from-save. */
+const levelParam = new URLSearchParams(location.search).get('level');
+const requested = levelParam === null || levelParam === '' ? NaN : Number(levelParam);
 if (Number.isFinite(requested) && requested >= 0 && requested < LEVELS.length) {
   levelIndex = requested;
+  cameFromLink = true;
 }
 
 // Whatever the save or the URL asked for, a locked pack is not playable.
