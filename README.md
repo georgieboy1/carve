@@ -45,7 +45,6 @@ Then open <http://localhost:5173>.
 | `game.js` | All gameplay, rendering, UI and ad logic |
 | `sw.js` | Service worker — offline app shell + cached three.js |
 | `manifest.webmanifest` | PWA metadata |
-| `blueprint.md` | Build log, design decisions, gotchas |
 
 ## Tuning
 
@@ -53,7 +52,7 @@ Everything worth adjusting lives in `CONFIG` at the top of `game.js`:
 
 | Key | Default | Notes |
 |---|---|---|
-| `MINE_COUNT` | `7` | Out of 36 blocks = 19%, Minesweeper Expert density. Raising it past ~8 removes the zeros that deduction needs — see `blueprint.md` |
+| `MINE_COUNT` | `7` | Out of 36 blocks = 19%, Minesweeper Expert density. Raising it past ~8 removes the zeros that deduction needs |
 | `CLEAR_GOAL` | `20` | Blocks to pull to win. Structurally-sound ceiling is 23 worst case, so don't raise this past ~22 |
 | `TILT_PER_HIT` | `3` | Degrees of lean added per mine or collapse |
 | `START_HEARTS` | `3` | |
@@ -104,13 +103,13 @@ ready, create an empty repo named `carve` at
 initial commit on their side will collide with ours), then:
 
 ```bash
-git remote add origin https://github.com/kacygeorge/carve.git
+git remote add origin https://github.com/georgieboy1/carve.git
 git push -u origin main
 ```
 
 Then turn on Pages: **Settings → Pages → Source: Deploy from a branch →
 `main` / `(root)`**. The site goes live at
-`https://kacygeorge.github.io/carve/` a minute or so later.
+`https://georgieboy1.github.io/carve/` a minute or so later.
 
 Note that a public repo plus Pages means both the code and the game are
 publicly visible and indexable by search engines.
