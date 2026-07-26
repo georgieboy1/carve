@@ -248,6 +248,13 @@ a.pill { text-decoration: none; display: inline-block; }
 }
 
 .row b { color: var(--mint); text-transform: capitalize; }
+
+.sheet-note {
+  margin: -2px 4px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
 .row:active { transform: scale(.985); }
 
 /* ---------- Examine mode ----------

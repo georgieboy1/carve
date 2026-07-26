@@ -100,6 +100,7 @@ const blankSave = () => ({
   zenUnlocked: false,
   zenTrialUsed: false,
   muted: false,
+  focus: 'off',          // off | pulse | binaural
 });
 
 function readSave() {
@@ -1324,6 +1325,7 @@ function updateHUD() {
 
   ui.clueBtn.querySelector('b').textContent = state.clueMode;
   ui.muteBtn.querySelector('b').textContent = save.muted ? 'Off' : 'On';
+  ui.focusBtn.querySelector('b').textContent = save.focus || 'off';
   ui.hintBtn.textContent = isZen() ? 'Hint · ∞' : `Hint · ${state.hintsLeft}`;
   ui.hintBtn.disabled = !isZen() && state.hintsLeft <= 0;
 }
@@ -1605,7 +1607,8 @@ async function startAudio() {
   }
 
   audio.ready = true;
-  syncMusicLayers();   // in case progress is already past a threshold
+  syncMusicLayers();
+  if (save.focus && save.focus !== 'off') startFocus(save.focus);   // in case progress is already past a threshold
 }
 
 /* Ramps are scheduled on the audio clock, not a JS timer — a setInterval
@@ -1683,6 +1686,117 @@ function fadeMaster(to, seconds) {
   audio.master.gain.cancelScheduledValues(now);
   audio.master.gain.setValueAtTime(audio.master.gain.value, now);
   audio.master.gain.linearRampToValueAtTime(to, now + seconds);
+}
+
+/* ============================================================
+   FOCUS TONE
+   ------------------------------------------------------------
+   A quiet layer under the music. Two generators, because they are not the
+   same thing and only one of them survives a laptop speaker:
+
+   BINAURAL — carrier-beat/2 hard left, carrier+beat/2 hard right. The beat
+   exists only where the two ears are combined, so it REQUIRES headphones;
+   on a speaker the channels sum in the air and you just hear two tones.
+   The perceptual effect is also generally reported to weaken above ~30Hz,
+   so a 40Hz "gamma" binaural beat is at the very edge of what the mechanism
+   does at all. Offered because it is asked for, capped where it is honest.
+
+   PULSE — one carrier amplitude-modulated at the beat rate. This is what
+   the actual 40Hz gamma sensory work uses, it works on speakers, and the
+   modulation is genuinely present in the signal rather than inferred by the
+   listener. If you want 40Hz, this is the one that delivers 40Hz.
+
+   Deliberately NOT claimed anywhere in the UI: cognition, learning, focus
+   as an outcome, or any health benefit. The evidence does not support it
+   and a puzzle game is not the place to imply it. It is labelled as what it
+   measurably is — a tone. */
+
+const FOCUS = {
+  carrier: 200,      // Hz. Low carriers are where binaural perception works
+  beat: 40,          // Hz. Difference for binaural, modulation rate for pulse
+  level: 0.05,       // sits well under the music
+  BINAURAL_HONEST_MAX: 30,   // above this the binaural mechanism falls away
+};
+
+const focus = { gain: null, nodes: [], mode: 'off' };
+
+function stopFocus() {
+  for (const node of focus.nodes) {
+    try { node.stop?.(); node.disconnect(); } catch { /* already gone */ }
+  }
+  focus.nodes = [];
+}
+
+function startFocus(mode) {
+  if (!audio.ready) return;
+  stopFocus();
+  focus.mode = mode;
+  if (mode === 'off') return;
+
+  const ctx = audio.ctx;
+  if (!focus.gain) {
+    focus.gain = ctx.createGain();
+    focus.gain.gain.value = 0;
+    focus.gain.connect(audio.master);
+  }
+
+  const { carrier, beat } = FOCUS;
+
+  if (mode === 'binaural') {
+    // The beat is the DIFFERENCE, so each ear is offset by half of it.
+    for (const [hz, pan] of [[carrier - beat / 2, -1], [carrier + beat / 2, 1]]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = hz;
+
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = pan;
+
+      osc.connect(panner).connect(focus.gain);
+      osc.start();
+      focus.nodes.push(osc, panner);
+    }
+  } else {
+    // Modulation actually in the signal: carrier * (0.5 + 0.5 * sin(beat)).
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = carrier;
+
+    const depth = ctx.createGain();
+    depth.gain.value = 0.5;              // offset, so the product stays 0..1
+
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = beat;
+
+    const lfoAmount = ctx.createGain();
+    lfoAmount.gain.value = 0.5;
+
+    lfo.connect(lfoAmount).connect(depth.gain);
+    osc.connect(depth).connect(focus.gain);
+    osc.start();
+    lfo.start();
+    focus.nodes.push(osc, lfo, lfoAmount, depth);
+  }
+
+  const now = ctx.currentTime;
+  focus.gain.gain.cancelScheduledValues(now);
+  focus.gain.gain.setValueAtTime(focus.gain.gain.value, now);
+  focus.gain.gain.linearRampToValueAtTime(FOCUS.level, now + 1.5);
+}
+
+function cycleFocus() {
+  const order = ['off', 'pulse', 'binaural'];
+  const next = order[(order.indexOf(save.focus || 'off') + 1) % order.length];
+  save.focus = next;
+  writeSave();
+
+  startAudio().then(() => startFocus(next));
+  updateHUD();
+
+  toast(next === 'off' ? 'Tone off'
+    : next === 'pulse' ? `Pulse tone · ${FOCUS.beat}Hz`
+      : `Binaural · ${FOCUS.beat}Hz · needs headphones`);
 }
 
 function toggleMute() {
@@ -1826,6 +1940,8 @@ ui.adBtn.addEventListener('click', watchAd);
 ui.clueBtn.addEventListener('click', cycleClueMode);
 ui.muteBtn = document.getElementById('mute-btn');
 ui.muteBtn.addEventListener('click', toggleMute);
+ui.focusBtn = document.getElementById('focus-btn');
+ui.focusBtn.addEventListener('click', cycleFocus);
 ui.modeBtn.addEventListener('click', toggleMode);
 ui.hintBtn.addEventListener('click', useHint);
 
@@ -1890,6 +2006,7 @@ window.Carve = {
   applyTheme, themeState, rampColour, SIGNALS,
   CRAZY, initCrazy, requestCrazyAd, fractureThenAd, pauseForAd, resumeAfterAd,
   gameplayStart, gameplayStop, fadeMaster, syncPlatformSave,
+  FOCUS, focus, startFocus, stopFocus, cycleFocus,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
   musicCrumble, musicProgress, fadeLayer, toggleMute,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,
