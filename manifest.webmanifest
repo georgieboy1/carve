@@ -1,7 +1,7 @@
 {
   "name": "Carve",
   "short_name": "Carve",
-  "description": "Carve away the waste and reveal the sculpture hiding in the stone. 60 puzzles across ten collections.",
+  "description": "Carve away the waste and reveal the sculpture hiding in the stone. 60 puzzles across twelve collections.",
   "id": "./",
   "start_url": "./",
   "scope": "./",
