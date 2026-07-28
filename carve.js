@@ -928,6 +928,7 @@ function carve(cellKey) {
     if (mesh) mesh.material = view.keeperMaterial;
     view.meshes.splice(view.meshes.indexOf(mesh), 1);
     navigator.vibrate?.(60);
+    playStrike();
     state.errors++;
 
     // Zen keeps the information — you still learn this cube is sculpture —
@@ -956,6 +957,7 @@ function carve(cellKey) {
   }
 
   burst(cell);
+  playCarve(cell);
   syncMusicLayers();
 
   addLabel(cell);
@@ -974,6 +976,7 @@ function toggleMark(cellKey) {
     mesh.material = cell.marked ? view.markMaterial : view.cubeMaterials[cell.y];
   }
   navigator.vibrate?.(15);
+  playMark(cell.marked);
   refreshClues();          // a decided cube can retire the clues around it
 }
 
@@ -982,6 +985,7 @@ function finish(result) {
   state.status = result;
 
   if (result === 'won') {
+    playReveal();
     for (const sprite of view.labels) {
       view.group.remove(sprite);
       sprite.material.dispose();
@@ -1155,6 +1159,7 @@ function useHint() {
   // Zen hands out hints freely; in a scored run each one costs half a star.
   if (!isZen()) state.hintsLeft--;
   state.hintsUsed++;
+  playHint();
   updateHUD();
 
   const mesh = view.meshByKey.get(hint.cell.key);
@@ -1656,6 +1661,10 @@ async function startAudio() {
   audio.master.gain.value = save.muted ? 0 : AUDIO.VOLUME;
   audio.master.connect(audio.ctx.destination);
 
+  // Built before the stems are awaited: decoding a real stem could take a
+  // second and the first carve must not be the one sound that goes missing.
+  sfx.rig = makeSfxRig(audio.ctx, audio.master);
+
   const stems = {
     base: await loadStem('base', makeBase),
     rhythm: await loadStem('rhythm', makeRhythm),
@@ -1749,8 +1758,14 @@ function playCrumble() {
   const gain = ctx.createGain();
   gain.gain.value = 0.6;
 
-  source.connect(lowpass).connect(gain).connect(audio.master);
+  // Through the foley ceiling when there is one, so the crumble and a strike
+  // that lands in the same instant cannot sum past it.
+  source.connect(lowpass).connect(gain).connect(sfx.rig?.raw || audio.master);
   source.start(now);
+  source.stop(now + seconds);
+  source.onended = () => {
+    for (const node of [source, lowpass, gain]) { try { node.disconnect(); } catch { /* gone */ } }
+  };
 }
 
 function fadeMaster(to, seconds) {
@@ -1759,6 +1774,627 @@ function fadeMaster(to, seconds) {
   audio.master.gain.cancelScheduledValues(now);
   audio.master.gain.setValueAtTime(audio.master.gain.value, now);
   audio.master.gain.linearRampToValueAtTime(to, now + seconds);
+}
+
+/* ============================================================
+   FOLEY
+   ------------------------------------------------------------
+   Everything the chisel does. Synthesised, because zero external requests
+   is a hard rule here and the privacy page is written against it.
+
+   The model is modal synthesis: a struck solid is a noise burst poured into
+   a handful of high-Q resonators. The resonant frequency IS the perceived
+   size of the fragment, so pitch is not decoration — it is the one parameter
+   that tells the player how big a piece just came off. That is why it moves
+   with context rather than being sprayed randomly.
+
+   Three rules the mix obeys:
+
+   1. NOTHING BELOW 120Hz. The drone lives at 110/165Hz and a phone speaker
+      reproduces none of it anyway, so sub energy would only mud the music
+      and eat headroom. A highpass on the bus enforces it for every sound at
+      once rather than trusting each synth to behave.
+
+   2. THE BUS CANNOT CLIP. A WaveShaper sits last with a curve whose maximum
+      value is 0.871. A WaveShaper clamps its input to [-1,1] before the
+      lookup, so the output is bounded by the curve's extreme NO MATTER what
+      arrives — this is arithmetic, not a compressor's best effort. The curve
+      is exactly unity below 0.6 so it is inert in normal play.
+      oversample stays 'none' on purpose: 4x resampling can overshoot the
+      curve's bound by a fraction of a dB, and the bound is the point.
+
+   3. NO TWO STRIKES ALIKE. Carve fires hundreds of times a session. Pitch,
+      the inharmonic mode ratios, Q, decay, pan and the noise read offset are
+      all redrawn per strike, and a pitch landing within a semitone of the
+      previous one gets pushed off it.
+   ============================================================ */
+
+const SFX = {
+  LEVEL: 0.62,        // bus trim; every voice below is written against this
+  KNEE: 0.6,          // soft clip is unity under here
+  CEILING: 0.92,      // ...and asymptotes here. Curve max works out at 0.871
+  HIGHPASS: 120,      // out of the drone's register, off the phone's sub
+  NOISE: 2,           // seconds of shared noise bed, read from a random offset
+  MAX_VOICES: 16,     // past this a strike is dropped, never piled on
+
+  /* Every level in the game, in one place, so the balance can be read
+     without hunting through the synths. Numbers are branch envelope peaks,
+     which after the resonator compensation below are directly comparable
+     between a noise branch and an oscillator branch.
+
+     Reference: the three music stems together peak at 0.31 and sit at
+     0.068 RMS out of the master. These are set against that. */
+  MIX: {
+    CARVE_BODY: 0.42, CARVE_TICK: 0.21, CARVE_DUST: 0.19,
+    MARK_LOW: 0.50, MARK_HIGH: 0.40, MARK_TAP: 0.10,
+    STRIKE_CRACK: 0.28, STRIKE_FALL: 0.26, STRIKE_THUD: 0.16,
+    REVEAL: [0.39, 0.143, 0.058], REVEAL_AIR: 0.10,
+    HINT: 0.10,
+  },
+};
+
+const sfx = { rig: null };
+
+/* Unity up to the knee, then a tanh shoulder that flattens into CEILING.
+   Continuous in value AND slope at the knee, so there is no audible corner
+   where the shoulder takes over. */
+function softClipCurve(knee, ceiling, steps = 2049) {
+  const curve = new Float32Array(steps);
+  const room = ceiling - knee;
+
+  for (let i = 0; i < steps; i++) {
+    const x = (i / (steps - 1)) * 2 - 1;
+    const a = Math.abs(x);
+    curve[i] = Math.sign(x) * (a <= knee ? a : knee + room * Math.tanh((a - knee) / room));
+  }
+  return curve;
+}
+
+/* The rig is built against a context rather than reading `audio.ctx`, so the
+   exact same graph can be rendered into an OfflineAudioContext and measured.
+   An SFX chain you cannot measure is one you are guessing about. */
+function makeSfxRig(ctx, destination) {
+  const noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * SFX.NOISE), ctx.sampleRate);
+  const data = noise.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+
+  const bus = ctx.createGain();
+  bus.gain.value = SFX.LEVEL;
+
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = 'highpass';
+  highpass.frequency.value = SFX.HIGHPASS;
+
+  const shaper = ctx.createWaveShaper();
+  shaper.curve = softClipCurve(SFX.KNEE, SFX.CEILING);
+  shaper.oversample = 'none';
+
+  /* A second input that skips the highpass but NOT the ceiling. The crumble
+     sweeps its own lowpass down to 130Hz and that collapsing low end is the
+     whole sound, so it cannot go through the highpass — but it still has to
+     be inside the bound, or the one guaranteed number in this file would
+     only cover some of the audio. */
+  const raw = ctx.createGain();
+  raw.gain.value = 1;
+  raw.connect(shaper);
+
+  bus.connect(highpass).connect(shaper).connect(destination);
+
+  return { ctx, bus, raw, noise, voices: 0, lastPitch: 0, lastNote: 0, lastStrike: -1 };
+}
+
+/* Null until the first gesture has armed the context, and null while muted —
+   a muted game should not be building and tearing down graphs for silence.
+   The rig hangs off audio.master, so the mute fade covers it either way; this
+   is about not doing the work, not about whether it would be heard. */
+function liveRig() {
+  if (save.muted || !sfx.rig) return null;
+  return sfx.rig;
+}
+
+/* Every node a voice creates is tracked and hard-disconnected the instant its
+   driver stops. Carve alone runs this hundreds of times per session, so
+   "the collector will probably get it" is not good enough — an orphaned
+   filter still costs a graph traversal every render quantum. */
+function sfxVoice(rig) {
+  if (rig.voices >= SFX.MAX_VOICES) return null;
+  rig.voices++;
+
+  const nodes = [];
+  let torn = false;
+
+  return {
+    add(node) { nodes.push(node); return node; },
+
+    /* `driver` is the last node to stop, and its onended is the one place a
+       voice is ever dismantled.
+
+       Both guards matter. The polyphony cap reads this counter, so a count
+       that drifts UP by one per thousand strikes would eventually wedge the
+       cap shut and silence the game's main sound permanently — a bug that
+       only shows up in a long session, which is the worst kind. `torn` makes
+       teardown idempotent whatever the implementation does with onended, and
+       the floor means even an unbalanced release can only ever cost one
+       voice of polyphony, never the whole channel. */
+    release(driver) {
+      driver.onended = () => {
+        if (torn) return;
+        torn = true;
+        for (const node of nodes) { try { node.disconnect(); } catch { /* already gone */ } }
+        nodes.length = 0;
+        rig.voices = Math.max(0, rig.voices - 1);
+      };
+    },
+  };
+}
+
+/* Loops the shared bed from a random offset, so the same two seconds of
+   noise never lines up with itself twice. */
+function noiseSource(rig, voice, when, seconds, rate = 1) {
+  const source = voice.add(rig.ctx.createBufferSource());
+  source.buffer = rig.noise;
+  source.loop = true;
+  source.playbackRate.value = rate;
+  source.start(when, Math.random() * (SFX.NOISE - 0.25));
+  source.stop(when + seconds);
+  return source;
+}
+
+/* Exponential, because that is how a struck solid actually sheds energy.
+   A linear fall on a 120ms transient reads as a synthetic blip. */
+function strikeEnv(param, when, peak, attack, decay) {
+  param.setValueAtTime(0.0001, when);
+  param.exponentialRampToValueAtTime(peak, when + attack);
+  param.exponentialRampToValueAtTime(0.0001, when + attack + decay);
+  param.setValueAtTime(0, when + attack + decay);
+}
+
+/* One resonant mode: bandpass at `freq`, level set by its own gain.
+
+   The compensation is not optional. A bandpass fed white noise only passes
+   what fits in its bandwidth, so a Q of 20 comes out roughly three times
+   quieter than a Q of 2 at the same nominal gain. Without this, randomising Q
+   per strike — which is most of what makes strikes sound different — would
+   randomise LOUDNESS instead of timbre, and the sound would flap about. */
+function resonator(rig, voice, source, freq, q, level, dest) {
+  const filter = voice.add(rig.ctx.createBiquadFilter());
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  filter.Q.value = q;
+
+  const bandwidth = Math.max(freq / q, 1);
+  const gain = voice.add(rig.ctx.createGain());
+  gain.gain.value = level * Math.sqrt((rig.ctx.sampleRate / 2) / bandwidth);
+
+  source.connect(filter).connect(gain).connect(dest);
+  return filter;
+}
+
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/* ---------- context the chisel listens to ---------- */
+
+const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+/* 0 = a fragment hanging off the surface, 1 = fully entombed. More stone
+   behind the chisel means more mass to move: lower, duller, longer. */
+function buriedness(cell) {
+  let held = 0;
+  for (const [dx, dy, dz] of FACES) {
+    const other = state.byKey.get(cellKey(cell.x + dx, cell.y + dy, cell.z + dz));
+    if (other && !other.carved) held++;
+  }
+  return held / FACES.length;
+}
+
+/* Pan follows the block's position ON SCREEN, not in the model. The player
+   spins the stone constantly, so world-space panning would send a block they
+   are looking at straight ahead out to one ear. Kept well inside hard left
+   and right — this is a hint about where you struck, not a stereo effect. */
+function screenPan(cell) {
+  if (!view.camera || !view.group) return 0;
+  try {
+    const ndc = view.group.localToWorld(worldPos(cell)).project(view.camera);
+    return Number.isFinite(ndc.x) ? clamp(ndc.x * 0.5, -0.5, 0.5) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/* ---------- 1. THE CARVE ---------- */
+
+/* A chisel releasing stone, in three simultaneous parts:
+
+   TICK    the steel meeting the surface. 4-11ms, broad and bright, and the
+           only reason the sound has a defined moment of contact at all.
+   BODY    two inharmonic modes. Real stone is not a tuned bar, so the second
+           mode sits at an irrational-ish 1.45-1.8x rather than an octave or a
+           fifth — harmonic ratios would make every strike sound like a note
+           and the whole session like a broken xylophone.
+   DUST    a lowpassed tail that outlives the body. This is the part that
+           makes it read as stone rather than as a click. */
+function playCarve(cell) {
+  const rig = liveRig();
+  if (!rig) return;
+
+  const voice = sfxVoice(rig);
+  if (!voice) return;
+
+  const { ctx } = rig;
+  const now = ctx.currentTime;
+
+  // How fast the player is chiselling. A flurry is a run of light taps, so
+  // it gets shorter and quieter — which is also what keeps twenty strikes in
+  // a second from summing into a wall.
+  const gap = rig.lastStrike < 0 ? 1 : now - rig.lastStrike;
+  const flurry = clamp(gap / 0.16, 0.42, 1);
+  rig.lastStrike = now;
+
+  const buried = buriedness(cell);
+  const revealed = musicProgress();          // 0 at the first strike, 1 at the reveal
+
+  // Fragment size -> pitch. Buried cubes ring low; as the stone thins out
+  // towards the reveal every remaining piece is smaller, so it all drifts up.
+  const size = clamp(0.58 - 0.40 * buried + 0.26 * revealed + rand(-0.16, 0.16), 0, 1);
+  let f0 = 232 * (700 / 232) ** size;
+
+  // Repetition is the enemy. A pitch landing inside a semitone of the last
+  // one is shoved off it, so consecutive strikes are always distinguishable.
+  if (Math.abs(Math.log2(f0 / rig.lastPitch)) < 1 / 12) f0 *= f0 >= rig.lastPitch ? 1.10 : 0.91;
+  f0 = clamp(f0, 200, 780);
+  rig.lastPitch = f0;
+
+  const decay = rand(0.075, 0.185) * (1 + 0.35 * buried) * flurry;
+  const seconds = decay + 0.14;              // the dust runs on past the body
+
+  const pan = ctx.createStereoPanner ? voice.add(ctx.createStereoPanner()) : null;
+  if (pan) { pan.pan.value = screenPan(cell); pan.connect(rig.bus); }
+  const out = pan || rig.bus;
+
+  const source = noiseSource(rig, voice, now, seconds, rand(0.9, 1.15));
+
+  // BODY
+  const body = voice.add(ctx.createGain());
+  strikeEnv(body.gain, now, SFX.MIX.CARVE_BODY * flurry, 0.0016, decay);
+  source.connect(body);
+
+  resonator(rig, voice, body, f0, rand(8, 12), 1, out);
+  resonator(rig, voice, body, f0 * rand(1.45, 1.82), rand(12, 18), rand(0.4, 0.62), out);
+
+  // TICK — broad and high, gone in 4ms. Contact, not tone.
+  const tick = voice.add(ctx.createGain());
+  strikeEnv(tick.gain, now, SFX.MIX.CARVE_TICK * flurry, 0.0008, rand(0.004, 0.011));
+  source.connect(tick);
+  resonator(rig, voice, tick, clamp(f0 * rand(3.4, 4.6), 900, 5200), rand(1.2, 2.6), 1, out);
+
+  // DUST — grit falling away, cutoff collapsing as it settles.
+  const dust = voice.add(ctx.createGain());
+  strikeEnv(dust.gain, now, SFX.MIX.CARVE_DUST * flurry, 0.004, seconds - 0.02);
+
+  const settle = voice.add(ctx.createBiquadFilter());
+  settle.type = 'lowpass';
+  settle.frequency.setValueAtTime(rand(3400, 5200), now);
+  settle.frequency.exponentialRampToValueAtTime(rand(520, 900), now + seconds);
+  settle.Q.value = 0.7;
+
+  source.connect(dust).connect(settle).connect(out);
+
+  voice.release(source);
+}
+
+/* ---------- 2. THE MARK ---------- */
+
+/* Recognition, not removal — so this is the one sound in the game with a
+   pitch you could hum. The notes come out of the same A major pentatonic the
+   melody stem is built from (110/165 drone, 440/550/660/880 melody), which is
+   why marking during play lands as part of the music instead of on top of it.
+   Marking rises a step; unmarking is the same voice, lower and shorter. */
+const MARK_NOTES = [440, 550, 660, 880];
+
+function playMark(on) {
+  const rig = liveRig();
+  if (!rig) return;
+
+  const voice = sfxVoice(rig);
+  if (!voice) return;
+
+  const { ctx } = rig;
+  const now = ctx.currentTime;
+
+  let note = MARK_NOTES[Math.floor(Math.random() * MARK_NOTES.length)];
+  if (note === rig.lastNote) note = MARK_NOTES[(MARK_NOTES.indexOf(note) + 1) % MARK_NOTES.length];
+  rig.lastNote = note;
+
+  const seconds = on ? 0.52 : 0.30;
+  const sum = voice.add(ctx.createGain());
+  sum.gain.value = 1;
+  sum.connect(rig.bus);
+
+  // Two soft partials. Triangle, not sine: a sine this quiet under a drone is
+  // felt rather than heard, and the third harmonic is what carries it.
+  const steps = on
+    ? [[note, 0, SFX.MIX.MARK_LOW], [note * 1.5, 0.075, SFX.MIX.MARK_HIGH]]   // up a fifth
+    : [[note * 0.5, 0, SFX.MIX.MARK_LOW * 0.55]];                             // down an octave
+
+  let last = null;
+  for (const [hz, delay, level] of steps) {
+    const osc = voice.add(ctx.createOscillator());
+    osc.type = 'triangle';
+    osc.frequency.value = hz;
+
+    const gain = voice.add(ctx.createGain());
+    const at = now + delay;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(level, at + 0.008);   // soft, never a click
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + seconds);
+    gain.gain.setValueAtTime(0, at + seconds);
+
+    osc.connect(gain).connect(sum);
+    osc.start(at);
+    osc.stop(at + seconds + 0.01);
+    last = osc;
+  }
+
+  // A dry wooden tap so the mark has a moment, not just a swell.
+  const tap = noiseSource(rig, voice, now, 0.03);
+  const tapGain = voice.add(ctx.createGain());
+  strikeEnv(tapGain.gain, now, SFX.MIX.MARK_TAP, 0.0008, 0.02);
+  tap.connect(tapGain);
+  resonator(rig, voice, tapGain, on ? 2400 : 1500, 2.2, 1, sum);
+
+  voice.release(last);
+}
+
+/* ---------- 3. THE MISTAKE ---------- */
+
+/* The chisel went into the sculpture. Two things make this flinch without
+   making it cruel:
+
+   FALLING PITCH. The bandpass sweeps 760Hz -> 170Hz over 200ms. A descending
+   resonance is read as "wrong" pretty much universally, and it does the work
+   that would otherwise be done by making the sound loud.
+
+   NOTHING SHARP ON TOP. Harshness is high-frequency energy, so the whole
+   thing goes through a lowpass at 3kHz and the tail is deliberately short.
+   A sound that rings on is what makes a failure feel like a telling-off. */
+function playStrike() {
+  const rig = liveRig();
+  if (!rig) return;
+
+  const voice = sfxVoice(rig);
+  if (!voice) return;
+
+  const { ctx } = rig;
+  const now = ctx.currentTime;
+  const seconds = 0.34;
+
+  const tame = voice.add(ctx.createBiquadFilter());
+  tame.type = 'lowpass';
+  tame.frequency.value = 3000;
+  tame.Q.value = 0.6;
+  tame.connect(rig.bus);
+
+  const source = noiseSource(rig, voice, now, seconds);
+
+  // The crack itself.
+  const crack = voice.add(ctx.createGain());
+  strikeEnv(crack.gain, now, SFX.MIX.STRIKE_CRACK, 0.001, 0.05);
+  source.connect(crack);
+  resonator(rig, voice, crack, 1450, 2.4, 1, tame);
+
+  // The fracture running away downwards.
+  const fall = voice.add(ctx.createGain());
+  strikeEnv(fall.gain, now, SFX.MIX.STRIKE_FALL, 0.002, 0.24);
+  source.connect(fall);
+
+  const sweep = resonator(rig, voice, fall, 760, 5.5, 1, tame);
+  sweep.frequency.setValueAtTime(760, now);
+  sweep.frequency.exponentialRampToValueAtTime(170, now + 0.2);
+
+  // Weight. 156Hz sags to 132Hz — just above the bus highpass, so a phone
+  // still gets the body of it instead of losing it to a rumble it cannot play.
+  const thud = voice.add(ctx.createOscillator());
+  thud.type = 'triangle';
+  thud.frequency.setValueAtTime(156, now);
+  thud.frequency.exponentialRampToValueAtTime(132, now + 0.16);
+
+  const thudGain = voice.add(ctx.createGain());
+  strikeEnv(thudGain.gain, now, SFX.MIX.STRIKE_THUD, 0.004, 0.17);
+  thud.connect(thudGain).connect(tame);
+  thud.start(now);
+  thud.stop(now + seconds);
+
+  voice.release(source);
+}
+
+/* ---------- 4. THE REVEAL ---------- */
+
+/* Earned, so it is allowed to be the longest sound in the game — but it has
+   to land ON the music, not beside it. The arpeggio is A major pentatonic,
+   the same set the melody stem walks, and it closes on the A the drone has
+   been holding at 110Hz for the entire level.
+
+   Bell tone comes from stretched partials: 2.01x and 3.02x rather than exact
+   octaves and fifths. Exact integers give an organ; the slight stretch is
+   what a struck bowl does and it beats gently against itself. */
+function playReveal() {
+  const rig = liveRig();
+  if (!rig) return;
+
+  const voice = sfxVoice(rig);
+  if (!voice) return;
+
+  const { ctx } = rig;
+  const now = ctx.currentTime + 0.05;
+
+  const sum = voice.add(ctx.createGain());
+  sum.gain.value = 1;
+  sum.connect(rig.bus);
+
+  // Dust lifting off the finished piece, under the first two notes.
+  const air = noiseSource(rig, voice, now, 0.75);
+  const airGain = voice.add(ctx.createGain());
+  airGain.gain.setValueAtTime(0.0001, now);
+  airGain.gain.exponentialRampToValueAtTime(SFX.MIX.REVEAL_AIR, now + 0.09);
+  airGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.72);
+  airGain.gain.setValueAtTime(0, now + 0.73);
+
+  const airLp = voice.add(ctx.createBiquadFilter());
+  airLp.type = 'lowpass';
+  airLp.frequency.setValueAtTime(3800, now);
+  airLp.frequency.exponentialRampToValueAtTime(500, now + 0.75);
+  air.connect(airGain).connect(airLp).connect(sum);
+
+  // A, C#, E, A, E — rising, resolving on the octave over the drone's root.
+  const notes = [440, 550, 660, 880, 1320];
+  const partials = [[1, SFX.MIX.REVEAL[0], 1.7],
+    [2.01, SFX.MIX.REVEAL[1], 1.0],
+    [3.02, SFX.MIX.REVEAL[2], 0.6]];
+
+  let last = air;
+  let end = now + 0.75;
+
+  notes.forEach((hz, i) => {
+    const at = now + i * 0.115;
+
+    for (const [ratio, level, decay] of partials) {
+      const f = hz * ratio;
+      if (f > 9000) continue;                  // nothing up there but fatigue
+
+      const osc = voice.add(ctx.createOscillator());
+      osc.type = 'sine';
+      osc.frequency.value = f;
+
+      // Later notes are quieter, so the arpeggio does not pile up into a
+      // single loud chord at the end of the run.
+      const peak = level * (1 - i * 0.11);
+      const gain = voice.add(ctx.createGain());
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(peak, at + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + decay);
+      gain.gain.setValueAtTime(0, at + decay);
+
+      osc.connect(gain).connect(sum);
+      osc.start(at);
+      osc.stop(at + decay + 0.02);
+
+      if (at + decay > end) { end = at + decay; last = osc; }
+    }
+  });
+
+  voice.release(last);
+}
+
+/* ---------- 5. THE HINT ---------- */
+
+/* The stone telling you something. Airy and unresolved on purpose — a hint
+   is information, not an achievement, and a satisfying chime here would make
+   spending one feel like a reward. */
+function playHint() {
+  const rig = liveRig();
+  if (!rig) return;
+
+  const voice = sfxVoice(rig);
+  if (!voice) return;
+
+  const { ctx } = rig;
+  const now = ctx.currentTime;
+  const seconds = 0.6;
+
+  const source = noiseSource(rig, voice, now, seconds);
+
+  const swell = voice.add(ctx.createGain());
+  swell.gain.setValueAtTime(0.0001, now);
+  swell.gain.exponentialRampToValueAtTime(SFX.MIX.HINT, now + 0.08);
+  swell.gain.exponentialRampToValueAtTime(0.0001, now + seconds);
+  swell.gain.setValueAtTime(0, now + seconds);
+  source.connect(swell);
+
+  // A bandpass climbing a fifth: a question, not an answer.
+  const sweep = resonator(rig, voice, swell, 900, 7, 1, rig.bus);
+  sweep.frequency.setValueAtTime(900, now);
+  sweep.frequency.exponentialRampToValueAtTime(1650, now + seconds * 0.7);
+
+  voice.release(source);
+}
+
+/* ---------- measurement hook ----------
+
+   Renders any of the above into an OfflineAudioContext and reports the true
+   sample peak, so the headroom claims in this file are checked rather than
+   asserted. `music: true` runs the three stems alongside at their loudest, so
+   what comes back is the worst case that can actually reach the speakers.
+
+   The stem generators read audio.ctx directly, hence the swap; it is confined
+   to this function and restored in a finally. */
+async function renderSfx(name, { seconds = 3, fire = 1, every = 0.05, music = false, master = AUDIO.VOLUME } = {}) {
+  const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!Offline) return null;
+
+  const ctx = new Offline(2, Math.ceil(48000 * seconds), 48000);
+  const out = ctx.createGain();
+  out.gain.value = master;
+  out.connect(ctx.destination);
+
+  const liveCtx = audio.ctx;
+  const liveRigRef = sfx.rig;
+  const liveMuted = save.muted;
+
+  try {
+    audio.ctx = ctx;
+    save.muted = false;
+    sfx.rig = makeSfxRig(ctx, out);
+
+    if (music) {
+      for (const make of [makeBase, makeRhythm, makeMelody]) {
+        const src = ctx.createBufferSource();
+        src.buffer = make();
+        src.loop = true;
+        src.connect(out);                     // every stem at full, which only
+        src.start(0);                         // happens past the last threshold
+      }
+    }
+
+    const play = { carve: () => playCarve(state.cells[0] || { x: 0, y: 0, z: 0 }),
+      mark: () => playMark(true), unmark: () => playMark(false),
+      strike: playStrike, reveal: playReveal, hint: playHint }[name];
+    if (!play) throw new Error(`no such sound: ${name}`);
+
+    // The polyphony cap is disabled for measurement: onended does not run
+    // mid-render offline, so the cap would silence the tail of a burst and
+    // flatter the result. Every fire is allowed through, which is strictly
+    // louder than anything the live game will produce.
+    const fireOne = () => { sfx.rig.voices = 0; play(); };
+
+    // suspend() is the only way to advance an offline clock, and each
+    // callback must be registered before rendering reaches its timestamp.
+    for (let i = 1; i < fire; i++) {
+      ctx.suspend(i * every).then(() => { fireOne(); ctx.resume(); });
+    }
+
+    fireOne();                                // at t=0, before the clock moves
+    const rendered = await ctx.startRendering();
+
+    let peak = 0;
+    let square = 0;
+    let count = 0;
+    for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+      const data = rendered.getChannelData(ch);
+      for (let i = 0; i < data.length; i++) {
+        const a = Math.abs(data[i]);
+        if (a > peak) peak = a;
+        square += data[i] * data[i];
+        count++;
+      }
+    }
+
+    return { name, fire, music, peak, rms: Math.sqrt(square / count), seconds };
+  } finally {
+    audio.ctx = liveCtx;
+    save.muted = liveMuted;
+    sfx.rig = liveRigRef;
+  }
 }
 
 /* ============================================================
@@ -2167,6 +2803,7 @@ window.Carve = {
   FOCUS, focus, startFocus, stopFocus, cycleFocus,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
   musicCrumble, musicProgress, fadeLayer, toggleMute,
+  SFX, sfx, playCarve, playMark, playStrike, playReveal, playHint, renderSfx,
   hasZen, zenTrialAvailable, unlockZen, openZenOffer,
   save, writeSave, readSave, exportSave, importSave, completedCount,
   get shape() { return SHAPE; },        // live, not a stale snapshot
