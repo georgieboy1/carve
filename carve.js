@@ -1443,20 +1443,57 @@ function digitTexture(n) {
   });
 }
 
-/* GHOST: block-sized and translucent, so a clue reads as the socket the cube
-   left behind rather than a sticker floating in front of it. */
+/* CARVED: the ghost, cut in.
+
+   Same glyph, same size, same reading speed - a digit is still the fastest
+   mark to read, and the clue is read hundreds of times a level, so that is
+   not worth trading for authenticity. What changes is that it stops floating
+   above the surface and starts belonging to it.
+
+   The whole trick is which edge is lit. Light in this scene comes from
+   above, so a groove cut into stone has its UPPER inner wall turned away and
+   in shadow, and its LOWER lip catching the light. Draw the dark copy
+   displaced up and the light copy displaced down and the eye reads a
+   channel. Reverse the two and the same glyph pops outward as a boss - it is
+   the only thing separating engraved from embossed.
+
+   The colour survives because it carries the value. Darkened, so it reads as
+   pigment rubbed into the cut rather than paint laid on top - which is a
+   real finishing technique, and keeps the digit legible against pale wood
+   where an unfilled groove would nearly vanish. */
 function ghostTexture(n) {
-  return texture(`ghost${n}`, (ctx, size) => {
+  return texture(`carved${n}`, (ctx, size) => {
+    const x = size / 2;
+    const y = size * 0.54;
+    const depth = size * 0.022;          // how deep the cut reads
     ctx.font = font(size * 0.82);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = size * 0.085;
-    ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-    ctx.lineJoin = 'round';
-    ctx.strokeText(n, size / 2, size * 0.54);
-    ctx.fillStyle = DIGIT_COLORS[n];
-    ctx.fillText(n, size / 2, size * 0.54);
+
+    // The lit lower lip of the groove.
+    ctx.fillStyle = 'rgba(255,252,247,0.85)';
+    ctx.fillText(n, x, y + depth);
+
+    // The shadowed upper wall.
+    ctx.fillStyle = 'rgba(58,42,30,0.42)';
+    ctx.fillText(n, x, y - depth * 0.8);
+
+    // Pigment in the cut: the value colour, taken down toward the wood.
+    ctx.globalAlpha = 0.82;
+    ctx.fillStyle = shade(DIGIT_COLORS[n], 0.62);
+    ctx.fillText(n, x, y);
+    ctx.globalAlpha = 1;
   });
+}
+
+/* Multiply a hex colour toward black. Cheaper than a colour library for the
+   one thing this file needs it for. */
+function shade(hex, k) {
+  const v = parseInt(hex.slice(1), 16);
+  const r = Math.round(((v >> 16) & 255) * k);
+  const g = Math.round(((v >> 8) & 255) * k);
+  const b = Math.round((v & 255) * k);
+  return `rgb(${r},${g},${b})`;
 }
 
 
@@ -1499,13 +1536,16 @@ function styleLabel(sprite) {
     return;
   }
 
-  const ghost = mode === 'ghost';
+  const carved = mode === 'ghost';   // stored key kept so old saves still load
   const spent = clueSatisfied(cell);
 
   sprite.visible = true;
-  sprite.material.map = ghost ? ghostTexture(cell.near) : digitTexture(cell.near);
-  sprite.scale.setScalar(ghost ? 0.92 : 0.55);
-  sprite.material.opacity = spent ? 0.16 : (ghost ? 0.62 : 1);
+  sprite.material.map = carved ? ghostTexture(cell.near) : digitTexture(cell.near);
+  sprite.scale.setScalar(carved ? 0.92 : 0.55);
+  /* Nearly opaque, unlike the translucent ghost it replaces. A mark cut into
+     a surface is not see-through; the reason the old one had to be faint was
+     that it sat in front of the stone rather than in it. */
+  sprite.material.opacity = spent ? 0.16 : (carved ? 0.9 : 1);
   sprite.material.needsUpdate = true;
 }
 
@@ -1554,6 +1594,11 @@ function unlockZen() {
   toast('Zen unlocked — carve as long as you like');
 }
 
+/* 'ghost' is the stored value, kept so existing saves keep working; what it
+   draws is now a cut mark, so the player-facing word changed and the key
+   did not. */
+const CLUE_LABEL = { chips: 'chips', ghost: 'carved', off: 'off' };
+
 function cycleClueMode() {
   const order = ['chips', 'ghost', 'off'];
   state.clueMode = order[(order.indexOf(state.clueMode) + 1) % order.length];
@@ -1561,7 +1606,7 @@ function cycleClueMode() {
   writeSave();
   refreshClues();
   updateHUD();
-  toast(`Clues: ${state.clueMode}`);
+  toast(`Clues: ${CLUE_LABEL[state.clueMode]}`);
 }
 
 /* ---------- PLAY ---------- */
@@ -2251,7 +2296,7 @@ function updateHUD() {
   }
   ui.pips.innerHTML = pips;
 
-  ui.clueBtn.querySelector('b').textContent = state.clueMode;
+  ui.clueBtn.querySelector('b').textContent = CLUE_LABEL[state.clueMode];
   ui.muteBtn.querySelector('b').textContent = save.muted ? 'Off' : 'On';
   ui.focusBtn.querySelector('b').textContent = save.focus || 'off';
 
