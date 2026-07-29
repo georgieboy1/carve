@@ -917,17 +917,54 @@ function buildVoxels() {
   view.scene.updateMatrixWorld(true);
 }
 
-/* Measured in cubes. Wide enough that the rings drift instead of repeating
-   per block, tall enough that the fibres read as long. */
-const GRAIN_SPAN = { x: 2.4, y: 5.0 };
+/* SOLID TEXTURE. The grain is a property of the BLOCK, not of any surface.
+
+   A 2D texture wrapped per face can only ever approximate wood, because the
+   moment a cube is carved away the face behind it is new material — and a
+   surface-mapped texture has no idea what should be there. It shows whatever
+   the UV says, which is the same thing the removed cube was showing.
+
+   Real wood does not work that way. Fibres run through the whole billet, so
+   the pattern on a fresh cut is decided by where that cut sits in the log.
+   Sample the texture by WORLD POSITION instead and you get that for free:
+   every newly exposed face already carries the grain belonging to its depth,
+   continuous with its neighbours, with nothing to update when a cube goes.
+
+   Done per vertex rather than in a shader, because there are no custom
+   materials here and this runs once at build. Each vertex picks the two
+   world axes perpendicular to its own normal — so a side face reads fibres
+   running up the block, and a top face reads end grain, exactly as a real
+   billet would when you cut across it. */
+const GRAIN_SPAN = { across: 2.4, along: 5.0 };
+
+const _v = new THREE.Vector3();
+const _n = new THREE.Vector3();
 
 function remapGrainUV(geometry, cell) {
   const uv = geometry.attributes.uv;
-  if (!uv) return;
+  const pos = geometry.attributes.position;
+  const nor = geometry.attributes.normal;
+  if (!uv || !pos || !nor) return;
+
   for (let i = 0; i < uv.count; i++) {
-    uv.setXY(i,
-      (cell.x + uv.getX(i)) / GRAIN_SPAN.x,
-      (cell.y + uv.getY(i)) / GRAIN_SPAN.y);
+    // Vertex position in block space: the cell it belongs to, plus its own
+    // offset within that cell (the cube is built centred on the origin).
+    _v.set(cell.x + pos.getX(i) + 0.5,
+           cell.y + pos.getY(i) + 0.5,
+           cell.z + pos.getZ(i) + 0.5);
+    _n.set(nor.getX(i), nor.getY(i), nor.getZ(i));
+
+    const ax = Math.abs(_n.x), ay = Math.abs(_n.y), az = Math.abs(_n.z);
+    let across, along;
+    if (ay > ax && ay > az) {
+      // Top or bottom: cut across the fibres. End grain.
+      across = _v.x; along = _v.z;
+    } else if (ax > az) {
+      across = _v.z; along = _v.y;     // fibres run up the block
+    } else {
+      across = _v.x; along = _v.y;
+    }
+    uv.setXY(i, across / GRAIN_SPAN.across, along / GRAIN_SPAN.along);
   }
   uv.needsUpdate = true;
 }
