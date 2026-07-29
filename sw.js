@@ -7,7 +7,17 @@
    rather than cache-first — see networkFirst() below for why that
    distinction cost us once already. */
 
-const VERSION = 'v1';
+/* BUMP THIS ON EVERY RELEASE THAT CHANGES ANY MODULE.
+
+   The ?v= query on carve.js in index.html busts carve.js and nothing else.
+   Its imports - themes.js, shapes.js, thumbs.js - carry no version, so a
+   returning player can get a NEW carve.js paired with an OLD themes.js. That
+   is not a subtle degradation: ES modules fail hard on a missing export, the
+   import throws, and the game renders a blank page.
+
+   Caught exactly that way after the wood finish added themes.finishOf.
+   Bumping VERSION drops the whole shell cache, so the set stays consistent. */
+const VERSION = 'v2';
 const SHELL_CACHE = `carve-shell-${VERSION}`;
 const RUNTIME_CACHE = `carve-runtime-${VERSION}`;
 
