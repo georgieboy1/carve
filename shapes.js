@@ -127,7 +127,7 @@ export const SHAPES = [
     ['.###.', '.###.', '.###.'],
     ['.###.', '.###.', '.###.'],
     ['.###.', '.###.', '.###.'],
-    ['.###.', '.#.#.', '.###.'],
+    ['.###.', '.###.', '.###.'],
     ['..#..', '.###.', '..#..'],
   ]),
 
@@ -153,7 +153,7 @@ export const SHAPES = [
 
   S('Snail', 'creatures', [
     ['#####', '#####', '#####'],
-    ['.###.', '.#.#.', '.###.'],
+    ['.###.', '.###.', '.###.'],
     ['..#..', '.###.', '..#..'],
   ]),
 
@@ -292,8 +292,8 @@ export const SHAPES = [
 
   S('Lantern', 'objects', [
     ['.###.', '.###.', '.###.'],
-    ['.###.', '.#.#.', '.###.'],
-    ['.###.', '.#.#.', '.###.'],
+    ['.###.', '.###.', '.###.'],
+    ['.###.', '.###.', '.###.'],
     ['.###.', '.###.', '.###.'],
     ['.....', '..#..', '.....'],
   ]),
@@ -518,6 +518,43 @@ export function validate(shape) {
 
   const floating = cells.size - grounded.size;
   if (floating) problems.push(`${floating} block(s) float free of the ground`);
+
+  /* REACHABILITY — can the player physically finish this level?
+
+     You can only tap a block that is exposed, and the sculpture is never
+     removed. So a waste cell walled in by keepers can never become exposed,
+     can never be carved, and `wasteLeft` can never reach zero. The level is
+     unwinnable by anyone.
+
+     This shipped three times (Snail, Clocktower, Lantern) as an innocent
+     "hollow interior" - a lantern with a cavity, a snail with a hollow
+     shell. It looks right in the text map and is invisible in play, because
+     the trapped cell is buried inside the shape. Nothing caught it: the
+     level stands, the carve count is sane, and it renders correctly. It just
+     cannot be completed.
+
+     Flood the empty space around the block and inward through waste only. */
+  const outside = new Set();
+  const seed = key(-1, -1, -1);
+  const pending = [[-1, -1, -1]];
+  outside.add(seed);
+  while (pending.length) {
+    const [x, y, z] = pending.shift();
+    for (const [dx, dy, dz] of OFFSETS) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (nx < -1 || ny < -1 || nz < -1
+        || nx > grid.x || ny > grid.y || nz > grid.z) continue;
+      const k = key(nx, ny, nz);
+      if (outside.has(k) || cells.has(k)) continue;   // sculpture blocks forever
+      outside.add(k);
+      pending.push([nx, ny, nz]);
+    }
+  }
+  const sealed = [...mass].filter((k) => !cells.has(k) && !outside.has(k));
+  if (sealed.length) {
+    problems.push(`${sealed.length} waste cell(s) sealed inside the sculpture `
+      + `- UNWINNABLE, they can never be exposed to tap`);
+  }
 
   const carve = mass.size - cells.size;
 
