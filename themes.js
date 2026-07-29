@@ -171,9 +171,13 @@ export const finishOf = (theme) => FINISHES[theme?.material] || null;
    0.26 turned Limewood grey. */
 const GRAIN = {
   size: 256,
-  rings: 2.1,       // ring count across ONE CUBE FACE
-  warp: 1.0,        // how far the noise bends them. 0 is a barcode.
-  late: 0.15,       // how dark a latewood line goes
+  /* Ring count across ONE TILE, and the tile now spans GRAIN_SPAN.x cubes
+     (2.4) rather than a single face — see remapGrainUV in carve.js. So this
+     works out near 1.5 rings per cube: enough that a cube is clearly a slice
+     of something larger, not so many that it turns back into a barcode. */
+  rings: 3.6,
+  warp: 1.15,       // how far the noise bends them. 0 is a barcode.
+  late: 0.24,       // how dark a latewood line goes
   pore: 0.09,       // fine fleck on top of it
 };
 

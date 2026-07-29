@@ -423,6 +423,8 @@ function woodTexture() {
     grainTexture = new THREE.CanvasTexture(woodGrainCanvas());
     grainTexture.colorSpace = THREE.SRGBColorSpace;
     grainTexture.anisotropy = 4;
+    // UVs now run past 1 - see remapGrainUV - so the tile has to wrap.
+    grainTexture.wrapS = grainTexture.wrapT = THREE.RepeatWrapping;
   }
   return grainTexture;
 }
@@ -893,6 +895,16 @@ function buildVoxels() {
     const mesh = new THREE.Mesh(
       new RoundedBoxGeometry(size, size, size, 4, 0.1),
       view.cubeMaterials[cell.y]);
+    /* Grain has to run through the BILLET, not around each cube. Every cube
+       shares one texture, so with default 0..1 UVs all sixty sample the same
+       window and the block reads as machined ribbing rather than wood.
+
+       Remapping each cube's UVs into the slice of texture its world position
+       occupies makes the grain continuous across the gaps: neighbours carry
+       on the same rings, and no two cubes are alike. The texture is set to
+       repeat, so GRAIN_SPAN is measured in cubes rather than stretching one
+       tile over the whole sculpture, which washes the grain out entirely. */
+    remapGrainUV(mesh.geometry, cell);
     mesh.position.copy(worldPos(cell));
     mesh.userData.key = cell.key;
     mesh.castShadow = true;
@@ -903,6 +915,21 @@ function buildVoxels() {
     view.meshByKey.set(cell.key, mesh);
   }
   view.scene.updateMatrixWorld(true);
+}
+
+/* Measured in cubes. Wide enough that the rings drift instead of repeating
+   per block, tall enough that the fibres read as long. */
+const GRAIN_SPAN = { x: 2.4, y: 5.0 };
+
+function remapGrainUV(geometry, cell) {
+  const uv = geometry.attributes.uv;
+  if (!uv) return;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i,
+      (cell.x + uv.getX(i)) / GRAIN_SPAN.x,
+      (cell.y + uv.getY(i)) / GRAIN_SPAN.y);
+  }
+  uv.needsUpdate = true;
 }
 
 function disposeVoxels() {
