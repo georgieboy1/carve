@@ -115,7 +115,7 @@ for (const pack of PACKS) {
       });
 
     const url = thumbnail(shown, grid,
-      isDone ? (y) => layerMaterial(theme.ramp, y, grid.y) : () => blankMaterial);
+      isDone ? (y) => layerMaterial(theme, y, grid.y) : () => blankMaterial);
 
     const stars = best?.stars ?? 0;
     const label = isDone

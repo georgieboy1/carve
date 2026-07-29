@@ -6,3 +6,6 @@ blueprint.md
 
 # Scratch preview, not part of the site.
 preview-*.html
+
+# Agent worktrees and local launch config - not part of the game.
+.claude/
