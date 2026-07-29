@@ -16,6 +16,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { finishOf, woodGrainCanvas } from './themes.js';
 
 const W = 300;
 const H = 276;
@@ -45,14 +46,32 @@ scene.add(fill);
 const camera = new THREE.PerspectiveCamera(42, W / H, 0.1, 200);
 const geometry = new RoundedBoxGeometry(0.93, 0.93, 0.93, 4, 0.1);
 
-/* The ramp is passed in, not owned here: the game, the shelf and the
+/* This renderer has its own WebGL context, so it needs its own texture
+   object — but the grain image itself comes from themes.js, so the wood in
+   a thumbnail is pixel-for-pixel the wood in the game. */
+let grain = null;
+
+function woodTexture() {
+  if (!grain) {
+    grain = new THREE.CanvasTexture(woodGrainCanvas());
+    grain.colorSpace = THREE.SRGBColorSpace;
+    grain.anisotropy = 4;
+  }
+  return grain;
+}
+
+/* The theme is passed in, not owned here: the game, the shelf and the
    catalogue all colour a sculpture from its pack's theme, so a sculpture
-   looks the same wherever it appears. */
+   looks the same wherever it appears. That now covers the material finish
+   as well as the ramp — a wooden pack must not turn back into stone the
+   moment it appears in the Collection. */
 const colours = new Map();
 
-export function layerMaterial(ramp, y, maxY) {
+export function layerMaterial(theme, y, maxY) {
+  const { ramp } = theme;
+  const finish = finishOf(theme);
   const t = maxY > 1 ? y / (maxY - 1) : 0;
-  const cacheKey = `${ramp.join('')}|${t.toFixed(3)}`;
+  const cacheKey = `${ramp.join('')}|${theme.material || 'stone'}|${t.toFixed(3)}`;
   if (colours.has(cacheKey)) return colours.get(cacheKey);
 
   const scaled = t * (ramp.length - 1);
@@ -60,7 +79,14 @@ export function layerMaterial(ramp, y, maxY) {
   const colour = new THREE.Color(ramp[i])
     .lerp(new THREE.Color(ramp[i + 1]), scaled - i);
 
-  const made = new THREE.MeshStandardMaterial({ color: colour, roughness: 0.62 });
+  // Gain first: the grain multiplies this back down to the ramp on average.
+  if (finish) colour.multiplyScalar(finish.gain);
+
+  const made = new THREE.MeshStandardMaterial({
+    color: colour,
+    roughness: finish ? finish.roughness : 0.62,
+    map: finish ? woodTexture() : null,
+  });
   colours.set(cacheKey, made);
   return made;
 }

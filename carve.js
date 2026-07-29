@@ -18,7 +18,22 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js';
-import { SIGNALS, themeFor } from './themes.js';
+import { SIGNALS, themeFor, finishOf, woodGrainCanvas } from './themes.js';
+
+/* ---------- MOTION PREFERENCE ----------
+   Read once into a plain boolean rather than calling matches() in the frame
+   loop, and kept live by the change event so toggling it in the OS takes
+   effect without a reload.
+
+   Everything gated on this is listed in one place on purpose, because the
+   failure mode is a new effect quietly forgetting to ask: dust, camera
+   shake, the impact light, the reveal camera move, and haptics. The shards
+   are NOT gated — they predate this and they are the primary "that block
+   is gone" signal, so removing them would remove information, not motion.
+   carve.css carries the matching rules for the DOM side. */
+const calmQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+let calm = calmQuery.matches;
+calmQuery.addEventListener('change', (e) => { calm = e.matches; });
 
 const CONFIG = {
   GRID: null,        // set per shape
@@ -40,6 +55,44 @@ const CONFIG = {
   TURNTABLE_WAIT: 2200, // ms of stillness before it resumes after a drag
   ZOOM_MIN: 0.45,      // multiples of the fitted distance
   ZOOM_MAX: 1.8,
+
+  /* ---- IMPACT ----
+     This fires several hundred times a session, so every number here is
+     deliberately smaller than it wants to be. */
+  DUST: 9,             // motes of stone powder per carve
+  DUST_LIFE: 1.15,     // seconds. Longer than a shard: powder hangs.
+  DUST_GRAVITY: 1.4,   // a tenth of the shards'. It settles, it doesn't drop.
+  DUST_DRAG: 2.2,      // air resistance, which is what makes it read as dust
+
+  CUT_LIFE: 0.5,       // seconds a newly exposed face stays bright
+  CUT_PEAK: 0.42,      // opacity. At 0.85 this was camera flare, not stone.
+  SPARK_LIFE: 0.22,    // the chisel's light on the stone around the cut
+  SPARK_PEAK: 2.4,     // candela at the impact. Tuned by eye at 375px.
+
+  // MICRO. Two and a half pixels for a sixth of a second, on a phone held a
+  // foot from your face. Anything you can consciously see here is too much:
+  // the point is that the tap lands in your hand, not that the screen moves.
+  SHAKE_LIFE: 0.16,
+  SHAKE_PIXELS: 2.5,
+  SHAKE_HZ: 13,
+
+  /* ---- THE REVEAL ----
+     Three beats, and the gaps between them are the whole design. See
+     beginReveal(). */
+  REVEAL_SETTLE: 0.45,  // s of nothing at all, while the last dust falls
+  REVEAL_MOVE: 2.2,     // s of camera move
+  REVEAL_BREATH: 0.6,   // s the camera holds still BEFORE the choice appears
+  REVEAL_TURN: 2.35,    // rad the move travels round the sculpture
+  REVEAL_PHI: 1.02,     // where it settles: a little above the equator
+  REVEAL_ARC: 0.2,      // it pulls back mid-move before pushing in
+  /* The strip of screen the reveal frames into, as fractions of the stage.
+     NOT the whole viewport: the HUD keeps the top and the reward card is
+     about to take the bottom third, so framing to the viewport puts a third
+     of the sculpture behind the card and leaves dead space above it.
+     Measured on the Lighthouse at 375px, that was 139px hidden under the
+     card with 184px of empty stage over its head. */
+  REVEAL_BAND_TOP: 0.05,
+  REVEAL_BAND_BOTTOM: 0.60,
 };
 
 /* Levels, their order and their grouping all come from shapes.js now. One
@@ -101,6 +154,7 @@ const blankSave = () => ({
   zenTrialUsed: false,
   muted: false,
   focus: 'off',          // off | pulse | binaural
+  haptics: true,         // navigator.vibrate, where the device has it
 });
 
 function readSave() {
@@ -234,6 +288,27 @@ function recordWin(name, stars, slips, hints, mode) {
 
 const completedCount = () => Object.keys(save.best).length;
 
+/* ---------- HAPTICS ----------
+   One funnel for every buzz in the game, because there are three reasons a
+   vibration must not fire and scattering those checks across call sites is
+   how one of them ends up missing it:
+
+     - the device has no vibrator (every desktop, and all of iOS Safari,
+       which has never shipped navigator.vibrate)
+     - the player turned it off under Display
+     - the player asked the OS for reduced motion
+
+   hasHaptics is what the settings row keys off, so a device that cannot
+   vibrate never offers a switch for it. */
+const hasHaptics = typeof navigator !== 'undefined' && !!navigator.vibrate;
+
+function buzz(pattern) {
+  if (!hasHaptics || calm || save.haptics === false) return;
+  // Some browsers throw here rather than returning false when the page is
+  // not user-activated. A missing buzz must never cost a carve.
+  try { navigator.vibrate(pattern); } catch { /* not worth reporting */ }
+}
+
 /* Portable save code. Base64 of the record with a short checksum so a
    mistyped code is rejected instead of half-applied. */
 function exportSave() {
@@ -273,7 +348,14 @@ let SHAPE = LEVELS[levelIndex];
 
    Signal colours are imported, never derived from the theme: see themes.js
    for why that separation is load-bearing. */
-const themeState = { current: null, targets: [] };
+const themeState = {
+  current: null,
+  targets: [],
+  // What a freshly exposed face flashes. Stone reads cold-white; wood is
+  // paler and creamier under the surface than on it, which is the actual
+  // thing you see when a gouge opens up limewood.
+  cutColour: new THREE.Color('#fff5ee'),
+};
 
 function rampColour(ramp, y, maxY) {
   const t = maxY > 1 ? y / (maxY - 1) : 0;
@@ -283,12 +365,82 @@ function rampColour(ramp, y, maxY) {
     .lerp(new THREE.Color(ramp[i + 1]), scaled - i);
 }
 
+/* ---------- MATERIAL FINISH ----------
+   themes.js owns what a finish IS; this owns applying it to the materials
+   the game happens to be made of. Both the cubes and the shards take it,
+   because a chip off a wooden block is wooden.
+
+   The signal materials deliberately do NOT: a struck cube, a mark and a
+   hint stay smooth and untextured. Breaking material as well as colour
+   makes a signal read louder on a grained surface, not weaker, and it
+   keeps the ΔE that themes.js validates as the whole story. */
+let currentFinish = 'stone';
+const WHITE = new THREE.Color(0xffffff);
+
+function applyFinish(theme) {
+  const name = theme.material || 'stone';
+
+  /* A fresh cut is not white. It is the SAME material with none of the
+     weathering — so it is the pack's own stone taken most of the way to
+     white, which keeps a pink pack pink and a green pack green underneath
+     the brightness. Flat white here made every carve look like a lens
+     flare pasted over the sculpture regardless of the theme. Wood stops
+     shorter of white and keeps a cream cast, because exposed limewood is
+     paler than its surface but nowhere near bleached. */
+  themeState.cutColour
+    .copy(rampColour(theme.ramp, CONFIG.MAX_Y / 2, CONFIG.MAX_Y))
+    .lerp(WHITE, name === 'wood' ? 0.62 : 0.76);
+
+  // Setting needsUpdate recompiles the material's shader program. That is
+  // cheap once on a level load and expensive every load, so two wooden
+  // packs in a row cost nothing.
+  if (name === currentFinish) return;
+  currentFinish = name;
+
+  const finish = finishOf(theme);
+  const map = finish ? woodTexture() : null;
+
+  for (const material of view.cubeMaterials) {
+    material.map = map;
+    material.roughness = finish ? finish.roughness : 0.62;
+    material.needsUpdate = true;
+  }
+
+  for (const material of shards.materials) {
+    material.map = map;
+    material.roughness = finish ? 0.6 : 0.35;
+    material.needsUpdate = true;
+  }
+}
+
+/* The game's own copy of the grain. themes.js hands out the canvas; the
+   texture object belongs to whichever WebGL context is going to sample it,
+   and the thumbnail renderer has its own. */
+let grainTexture = null;
+
+function woodTexture() {
+  if (!grainTexture) {
+    grainTexture = new THREE.CanvasTexture(woodGrainCanvas());
+    grainTexture.colorSpace = THREE.SRGBColorSpace;
+    grainTexture.anisotropy = 4;
+  }
+  return grainTexture;
+}
+
 function applyTheme(theme, instant = false) {
   if (!theme || themeState.current === theme) return;
   themeState.current = theme;
 
-  themeState.targets = view.cubeMaterials.map(
-    (_, y) => rampColour(theme.ramp, y, CONFIG.MAX_Y));
+  const finish = finishOf(theme);
+  themeState.targets = view.cubeMaterials.map((_, y) => {
+    const colour = rampColour(theme.ramp, y, CONFIG.MAX_Y);
+    // Brightened by exactly what the grain will take back out, so a wooden
+    // pack averages the ramp stop rather than a darker cousin of it.
+    if (finish) colour.multiplyScalar(finish.gain);
+    return colour;
+  });
+
+  applyFinish(theme);
 
   if (instant) {
     view.cubeMaterials.forEach((m, i) => m.color.copy(themeState.targets[i]));
@@ -365,6 +517,30 @@ const view = {
    is a lot of churn, so meshes are reused rather than allocated and thrown
    away mid-play. */
 const shards = { free: [], live: [], geometry: null, materials: [] };
+
+/* Stone powder. Flat typed arrays and ONE draw call for the lot, rather
+   than a mesh each: dust wants three times the count of the shards at a
+   twentieth of the visual weight, and forty meshes a carve is not a trade
+   worth making on a phone. Slots are a ring buffer — a burst that finds
+   every slot alive overwrites the oldest instead of growing the pool. */
+const dust = {
+  points: null, geometry: null, material: null,
+  position: null, colour: null, alpha: null, peak: null, size: null,
+  vx: null, vy: null, vz: null, life: null,
+  cap: 0, cursor: 0, live: 0,
+};
+
+/* The bright face a neighbouring cube shows once the stone in front of it
+   is gone. Each quad owns its material for the life of the game, because
+   they fade independently and a shared material can only hold one opacity —
+   allocating one per carve is exactly the churn the shard pool exists to
+   avoid. */
+const cuts = { free: [], live: [], geometry: null };
+
+/* Reused every frame while a shake is running. */
+const shake = { t: 0, mag: 0, phase: 0 };
+const shakeRight = new THREE.Vector3();
+const shakeUp = new THREE.Vector3();
 
 const ui = {};
 
@@ -499,6 +675,15 @@ function initScene() {
   fill.position.set(-7, 4, -5);
   view.scene.add(fill);
 
+  /* The chisel's light. Added here, at intensity 0, and never removed:
+     three keys its shader programs on the NUMBER of lights, so adding this
+     on the first carve would recompile every material in the scene mid-tap.
+     It costs one term in the lighting loop for the whole session instead.
+     No shadow — a shadow map per carve is not worth a fifth of a second. */
+  view.spark = new THREE.PointLight(0xffeacf, 0, 3.6, 2);
+  view.spark.userData.life = 0;
+  view.scene.add(view.spark);
+
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(40, 40),
     new THREE.ShadowMaterial({ opacity: 0.17 }));
@@ -573,6 +758,30 @@ function updateCamera() {
   view.camera.position.copy(view.cameraBase);
   view.camera.lookAt(view.target);
   view.camera.updateMatrixWorld();
+
+  if (shake.t <= 0) return;
+
+  // Pixels to world units at the distance we are actually standing, so the
+  // wobble is the same size on screen for every shape and every zoom.
+  const height = view.renderer.domElement.clientHeight || 1;
+  const perPixel = 2 * view.spherical.radius
+    * Math.tan((view.camera.fov * Math.PI) / 360) / height;
+
+  const k = shake.t / CONFIG.SHAKE_LIFE;                  // 1 -> 0
+  const amp = CONFIG.SHAKE_PIXELS * perPixel * shake.mag * k * k;
+  const w = shake.t * CONFIG.SHAKE_HZ * Math.PI * 2;
+
+  // Screen axes, taken from the matrix we just built, so the shake is
+  // always across the view rather than through the sculpture.
+  shakeRight.setFromMatrixColumn(view.camera.matrixWorld, 0);
+  shakeUp.setFromMatrixColumn(view.camera.matrixWorld, 1);
+
+  // Irrational-ish frequency ratio: the two axes never line up into a
+  // diagonal, which is what makes a two-axis shake look like a rattle.
+  view.camera.position
+    .addScaledVector(shakeRight, Math.sin(w + shake.phase) * amp)
+    .addScaledVector(shakeUp, Math.cos(w * 1.37 + shake.phase) * amp * 0.62);
+  view.camera.updateMatrixWorld();
 }
 
 function syncSize() {
@@ -585,6 +794,25 @@ function syncSize() {
   view.camera.aspect = w / h;
   fitCamera();
   view.camera.updateProjectionMatrix();
+
+  /* fitCamera() resets the distance and the look-at to the values PLAY
+     wants, which is right for play and wrong for a sculpture that has
+     already been framed for the reward card. Without this, anything that
+     changes the viewport after a win — turning the phone, mobile browser
+     chrome sliding away — throws the reveal framing out and snaps the
+     sculpture back to the middle of the screen behind the card.
+     Recomputing rather than restoring, because the new aspect deserves a
+     new answer. */
+  if (view.examining && state.status === 'won') reframeReveal();
+
+  // gl_PointSize is in device pixels, so the dust shader needs the drawing
+  // buffer height and the vertical FOV to turn a world size into one. Set
+  // here rather than per frame: it only changes when the viewport does.
+  if (dust.material) {
+    dust.material.uniforms.uScale.value =
+      (h * view.renderer.getPixelRatio())
+      / (2 * Math.tan((view.camera.fov * Math.PI) / 360));
+  }
 }
 
 let lastFrame = performance.now();
@@ -599,8 +827,17 @@ function renderFrame() {
   syncSize();
   if (!state.paused) {
     stepShards(dt);
+    stepDust(dt);
+    stepCuts(dt);
+    stepSpark(dt);
+    stepShake(dt);
     stepTheme(dt);
-    if (view.examining) stepExamine(dt, now);
+
+    // The reveal drives the camera itself, so the turntable stands down
+    // until it has landed. Two things easing the same spherical would
+    // fight, and the fight looks like a stutter at the end of the move.
+    if (reveal.phase !== 'off') stepReveal(dt);
+    else if (view.examining) stepExamine(dt, now);
   }
 
   view.renderer.render(view.scene, view.camera);
@@ -608,12 +845,25 @@ function renderFrame() {
 
 /* ---------- VOXELS ---------- */
 
-function worldPos(cell) {
-  return new THREE.Vector3(
+function worldPosInto(cell, out) {
+  return out.set(
     (cell.x - (CONFIG.GRID.x - 1) / 2) * CONFIG.CUBE,
     cell.y * CONFIG.CUBE,
     (cell.z - (CONFIG.GRID.z - 1) / 2) * CONFIG.CUBE);
 }
+
+function worldPos(cell) {
+  return worldPosInto(cell, new THREE.Vector3());
+}
+
+/* One carve now feeds four effects that all want the same point in space.
+   Computed once into this and passed down, rather than four Vector3 a tap. */
+const impact = new THREE.Vector3();
+
+/* The outward normal of the face a neighbour turns toward the gap, for each
+   of the six OFFSETS. Built once: a fresh cut spawns up to six of these and
+   the alternative is six Vector3 per carve. */
+const FACE_NORMALS = OFFSETS.map(([x, y, z]) => new THREE.Vector3(-x, -y, -z));
 
 function buildVoxels() {
   if (!view.cubeMaterials.length) {
@@ -683,7 +933,12 @@ function initShards() {
     shards.materials.push(new THREE.MeshStandardMaterial({
       color: base.color,
       emissive: base.color,
-      emissiveIntensity: 0.5,
+      // Was 0.5. On these pale ramps, half the layer colour added on top of
+      // an already-lit surface saturates: every chip came out white, off
+      // every pack, so a burst read as paper rather than as pieces of the
+      // block. Quarter keeps the lift that stops chips going muddy against
+      // the stone behind them, without bleaching out which stone they are.
+      emissiveIntensity: 0.25,
       roughness: 0.35,
     }));
   }
@@ -697,8 +952,7 @@ function initShards() {
   }
 }
 
-function burst(cell) {
-  const origin = worldPos(cell);
+function burst(cell, origin = worldPos(cell)) {
   const material = shards.materials[
     Math.min(cell.y, shards.materials.length - 1)];
 
@@ -744,6 +998,338 @@ function stepShards(dt) {
     shard.mesh.rotation.y += shard.spin * dt * 0.7;
     shard.mesh.scale.setScalar(1 - shard.life / CONFIG.SHARD_LIFE);
   }
+}
+
+/* ---------- DUST ----------
+   The shards say "a block broke". The dust says "it was stone". It is the
+   difference between a puzzle piece vanishing and a chisel going in, and it
+   only works if you never quite notice it — so it is small, slow, and there
+   is not much of it.
+
+   One THREE.Points, one draw call, one shader. Sizes and alphas are
+   attributes rather than uniforms so a single buffer can hold motes at
+   different ages, and the whole thing is a fixed allocation made at load. */
+
+const DUST_VERT = `
+  attribute vec3 aColour;
+  attribute float aAlpha;
+  attribute float aSize;
+  uniform float uScale;
+  varying vec3 vColour;
+  varying float vAlpha;
+  void main() {
+    vColour = aColour;
+    vAlpha = aAlpha;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    // uScale carries the viewport, so aSize is a real world size and a mote
+    // does not change size when the player pinches to zoom.
+    gl_PointSize = max(1.0, aSize * uScale / max(0.001, -mv.z));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const DUST_FRAG = `
+  varying vec3 vColour;
+  varying float vAlpha;
+  void main() {
+    vec2 d = gl_PointCoord - vec2(0.5);
+    float r2 = dot(d, d);
+    if (r2 > 0.25) discard;                       // square sprite -> round mote
+    float a = vAlpha * smoothstep(0.25, 0.02, r2);
+    if (a < 0.004) discard;
+    gl_FragColor = vec4(vColour, a);
+  }
+`;
+
+function initDust() {
+  const cap = CONFIG.DUST * 8;      // several overlapping carves, no more
+  dust.cap = cap;
+
+  dust.position = new Float32Array(cap * 3);
+  dust.colour = new Float32Array(cap * 3);
+  dust.alpha = new Float32Array(cap);
+  dust.size = new Float32Array(cap);
+  dust.peak = new Float32Array(cap);
+  dust.vx = new Float32Array(cap);
+  dust.vy = new Float32Array(cap);
+  dust.vz = new Float32Array(cap);
+  dust.life = new Float32Array(cap);
+
+  dust.geometry = new THREE.BufferGeometry();
+  dust.geometry.setAttribute('position', new THREE.BufferAttribute(dust.position, 3));
+  dust.geometry.setAttribute('aColour', new THREE.BufferAttribute(dust.colour, 3));
+  dust.geometry.setAttribute('aAlpha', new THREE.BufferAttribute(dust.alpha, 1));
+  dust.geometry.setAttribute('aSize', new THREE.BufferAttribute(dust.size, 1));
+
+  dust.material = new THREE.ShaderMaterial({
+    uniforms: { uScale: { value: 600 } },
+    vertexShader: DUST_VERT,
+    fragmentShader: DUST_FRAG,
+    transparent: true,
+    depthWrite: false,          // dust must never punch a hole in the stone
+  });
+
+  dust.points = new THREE.Points(dust.geometry, dust.material);
+  // The bounding sphere is computed from a buffer we rewrite every frame,
+  // so leaving culling on would let three cull live motes at the edges.
+  dust.points.frustumCulled = false;
+  dust.points.renderOrder = 1;
+  view.group.add(dust.points);
+}
+
+function puff(cell, origin) {
+  if (calm || !dust.points) return;
+
+  const base = view.cubeMaterials[Math.min(cell.y, view.cubeMaterials.length - 1)];
+  // Powder is the same stone seen in its own shadow. Lighter would vanish
+  // against these backgrounds; this is the smallest step that still reads.
+  const r = base.color.r * 0.74, g = base.color.g * 0.74, b = base.color.b * 0.74;
+
+  for (let n = 0; n < CONFIG.DUST; n++) {
+    const i = dust.cursor;
+    dust.cursor = (dust.cursor + 1) % dust.cap;
+
+    const p = i * 3;
+    dust.position[p] = origin.x + (Math.random() - 0.5) * 0.8;
+    dust.position[p + 1] = origin.y + (Math.random() - 0.5) * 0.8;
+    dust.position[p + 2] = origin.z + (Math.random() - 0.5) * 0.8;
+
+    dust.colour[p] = r; dust.colour[p + 1] = g; dust.colour[p + 2] = b;
+
+    // Mostly sideways off the cut, a little up. Powder is thrown out of a
+    // groove, it is not launched the way a chip is.
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.5 + Math.random() * 0.8;
+    dust.vx[i] = Math.cos(angle) * speed;
+    dust.vz[i] = Math.sin(angle) * speed;
+    dust.vy[i] = (0.15 + Math.random() * 0.75) * speed;
+
+    dust.size[i] = 0.035 + Math.random() * 0.055;
+    dust.peak[i] = 0.3 + Math.random() * 0.28;
+    dust.alpha[i] = dust.peak[i];
+    dust.life[i] = CONFIG.DUST_LIFE * (0.7 + Math.random() * 0.3);
+  }
+
+  dust.live = 1;      // the step will count them properly
+
+  // All four, not just the two this function writes. stepDust flags position
+  // and alpha every frame it runs, but if a frame renders between the puff
+  // and the next step — the tab coming back from hidden does exactly this —
+  // the new motes would be drawn at the previous occupant's coordinates.
+  dust.geometry.attributes.position.needsUpdate = true;
+  dust.geometry.attributes.aColour.needsUpdate = true;
+  dust.geometry.attributes.aAlpha.needsUpdate = true;
+  dust.geometry.attributes.aSize.needsUpdate = true;
+}
+
+function stepDust(dt) {
+  if (!dust.live) return;
+
+  // Framerate-independent drag, evaluated once for the whole buffer.
+  const drag = Math.exp(-CONFIG.DUST_DRAG * dt);
+  const fall = CONFIG.DUST_GRAVITY * dt;
+  let live = 0;
+
+  for (let i = 0; i < dust.cap; i++) {
+    let t = dust.life[i];
+    if (t <= 0) continue;
+
+    t -= dt;
+    if (t <= 0) {
+      dust.life[i] = 0;
+      dust.alpha[i] = 0;
+      dust.size[i] = 0;
+      continue;
+    }
+    dust.life[i] = t;
+    live++;
+
+    dust.vy[i] -= fall;
+    dust.vx[i] *= drag; dust.vy[i] *= drag; dust.vz[i] *= drag;
+
+    const p = i * 3;
+    dust.position[p] += dust.vx[i] * dt;
+    dust.position[p + 1] += dust.vy[i] * dt;
+    dust.position[p + 2] += dust.vz[i] * dt;
+
+    // Squared, so it hangs at full opacity and then leaves quickly rather
+    // than lingering as a grey haze over the sculpture.
+    const k = t / CONFIG.DUST_LIFE;
+    dust.alpha[i] = dust.peak[i] * k * k;
+  }
+
+  dust.live = live;
+  dust.geometry.attributes.position.needsUpdate = true;
+  dust.geometry.attributes.aAlpha.needsUpdate = true;
+  dust.geometry.attributes.aSize.needsUpdate = true;
+}
+
+/* ---------- FRESH CUT ----------
+   Two things happen to light when stone comes away, and the game showed
+   neither: the face behind it has never been exposed, and for an instant
+   there is more light in the gap than there was in the solid.
+
+   The face is a quad laid a few thousandths off the neighbour's surface,
+   inside the 0.07 gap the grid already leaves between cubes, so it can
+   never poke through anything. The light is one PointLight that lives in
+   the scene from load with intensity 0 — adding and removing a light
+   changes the light COUNT, which recompiles every material in the scene,
+   and doing that on a tap is a frame the player feels. */
+
+function initCuts() {
+  const face = CONFIG.CUBE - CONFIG.GAP;
+  cuts.geometry = new THREE.PlaneGeometry(face, face);
+
+  /* Held in from the edges and falling off fast. A wide, slow gradient
+     reads as a lens flare sitting in front of the sculpture; this reads as
+     the middle of a face catching the light, which is what a cut does. */
+  const map = texture('fresh-cut', (ctx, size) => {
+    const glow = ctx.createRadialGradient(
+      size / 2, size / 2, 0, size / 2, size / 2, size * 0.52);
+    glow.addColorStop(0, 'rgba(255,255,255,1)');
+    glow.addColorStop(0.34, 'rgba(255,255,255,0.86)');
+    glow.addColorStop(0.72, 'rgba(255,255,255,0.26)');
+    glow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, size, size);
+  });
+
+  // Six faces per carve, and carves overlap. Three bursts' worth.
+  for (let i = 0; i < 18; i++) {
+    const mesh = new THREE.Mesh(cuts.geometry, new THREE.MeshBasicMaterial({
+      map, transparent: true, opacity: 0, depthWrite: false,
+    }));
+    mesh.visible = false;
+    mesh.renderOrder = 2;
+    view.group.add(mesh);
+    cuts.free.push(mesh);
+  }
+}
+
+function cutFaces(cell) {
+  const warm = themeState.cutColour;
+
+  for (let i = 0; i < OFFSETS.length; i++) {
+    const [dx, dy, dz] = OFFSETS[i];
+    const neighbour = state.byKey.get(key(cell.x + dx, cell.y + dy, cell.z + dz));
+    if (!neighbour || neighbour.carved) continue;
+
+    const mesh = view.meshByKey.get(neighbour.key);
+    if (!mesh) continue;
+
+    const quad = cuts.free.pop();
+    if (!quad) return;              // pool exhausted: skip, never allocate
+
+    const normal = FACE_NORMALS[i];
+    quad.position.copy(mesh.position)
+      .addScaledVector(normal, (CONFIG.CUBE - CONFIG.GAP) / 2 + 0.012);
+    // lookAt points +Z at the target, and +Z is a plane's normal.
+    quad.lookAt(
+      quad.position.x + normal.x,
+      quad.position.y + normal.y,
+      quad.position.z + normal.z);
+
+    quad.material.color.copy(warm);
+    quad.material.opacity = CONFIG.CUT_PEAK;
+    quad.visible = true;
+    cuts.live.push({ mesh: quad, life: 0 });
+  }
+}
+
+function stepCuts(dt) {
+  for (let i = cuts.live.length - 1; i >= 0; i--) {
+    const cut = cuts.live[i];
+    cut.life += dt;
+
+    if (cut.life >= CONFIG.CUT_LIFE) {
+      cut.mesh.visible = false;
+      cut.mesh.material.opacity = 0;
+      cuts.free.push(cut.mesh);
+      cuts.live.splice(i, 1);
+      continue;
+    }
+
+    const k = 1 - cut.life / CONFIG.CUT_LIFE;
+    cut.mesh.material.opacity = CONFIG.CUT_PEAK * k * k;
+  }
+}
+
+function spark(origin) {
+  if (calm || !view.spark) return;
+  view.spark.position.copy(origin);
+  view.spark.userData.life = CONFIG.SPARK_LIFE;
+}
+
+function stepSpark(dt) {
+  const light = view.spark;
+  if (!light || light.userData.life <= 0) return;
+
+  light.userData.life = Math.max(0, light.userData.life - dt);
+  const k = light.userData.life / CONFIG.SPARK_LIFE;
+  light.intensity = CONFIG.SPARK_PEAK * k * k;
+}
+
+/* ---------- CAMERA SHAKE ----------
+   The brief on this is one word: micro. Overdone shake on a phone held a
+   foot from your face is nausea, and every game that ships it ships it too
+   big — so the amplitude here is specified in PIXELS and converted to world
+   units against the current camera distance, which means it stays two and a
+   half pixels whether the shape is a 3-cube Pillar or a 7-cube Ziggurat and
+   whatever the player has pinched the zoom to.
+
+   It translates the camera and leaves the orientation alone. Rotating it
+   would swing the far side of the sculpture much further than the near
+   side, which is the thing that reads as a lurch. */
+
+function addShake(strength = 1) {
+  if (calm) return;
+  shake.t = CONFIG.SHAKE_LIFE;
+  shake.mag = strength;
+  shake.phase = Math.random() * Math.PI * 2;
+}
+
+function stepShake(dt) {
+  if (shake.t <= 0) return;
+  shake.t = Math.max(0, shake.t - dt);
+  updateCamera();          // the offset is applied there, on the way out
+}
+
+/* Retire everything in flight, immediately.
+
+   Debris outlives a level: the pools are not touched by disposeVoxels, so
+   whatever was mid-air when the level changed carries into the next one.
+   That was survivable when it was only shards and only reachable by
+   finishing a level, because the reveal runs for three seconds and nothing
+   lives that long. It stopped being survivable once the reveal became
+   skippable — tap to skip, tap "Carve the next one", and you are half a
+   second from the last carve with a cut-face quad still glowing where a
+   cube used to be in a level that no longer exists. */
+function clearEffects() {
+  for (const shard of shards.live) {
+    shard.mesh.visible = false;
+    shards.free.push(shard.mesh);
+  }
+  shards.live.length = 0;
+
+  for (const cut of cuts.live) {
+    cut.mesh.visible = false;
+    cut.mesh.material.opacity = 0;
+    cuts.free.push(cut.mesh);
+  }
+  cuts.live.length = 0;
+
+  if (dust.points) {
+    dust.life.fill(0);
+    dust.alpha.fill(0);
+    dust.size.fill(0);
+    dust.live = 0;
+    dust.geometry.attributes.aAlpha.needsUpdate = true;
+    dust.geometry.attributes.aSize.needsUpdate = true;
+  }
+
+  if (view.spark) { view.spark.userData.life = 0; view.spark.intensity = 0; }
+  shake.t = 0;
+  shake.mag = 0;
 }
 
 /* ---------- NUMBER CHIPS ---------- */
@@ -927,7 +1513,11 @@ function carve(cellKey) {
     const mesh = view.meshByKey.get(cellKey);
     if (mesh) mesh.material = view.keeperMaterial;
     view.meshes.splice(view.meshes.indexOf(mesh), 1);
-    navigator.vibrate?.(60);
+
+    // A strike is the chisel hitting something that does not give. Harder
+    // and duller than a carve: a longer buzz, a bigger jolt, no dust.
+    buzz(60);
+    addShake(1.9);
     state.errors++;
 
     // Zen keeps the information — you still learn this cube is sculpture —
@@ -955,7 +1545,26 @@ function carve(cellKey) {
     mesh.geometry.dispose();
   }
 
-  burst(cell);
+  /* THE IMPACT. Five things, computed off one point in space, each of them
+     individually too small to notice and collectively the difference
+     between a block disappearing and a chisel going in:
+
+       burst      chips of the block, thrown
+       puff       powder, which is what says "stone" rather than "tile"
+       cutFaces   the faces behind it, which have never seen light
+       spark      more light in the gap for a fifth of a second
+       shake      two and a half pixels, so the tap lands in the hand
+
+     cutFaces runs BEFORE the clue label goes in, so it lights the stone and
+     not the chip that is about to sit in the hole. */
+  worldPosInto(cell, impact);
+  burst(cell, impact);
+  puff(cell, impact);
+  cutFaces(cell);
+  spark(impact);
+  addShake(1);
+  buzz(12);
+
   syncMusicLayers();
 
   addLabel(cell);
@@ -973,7 +1582,7 @@ function toggleMark(cellKey) {
   if (mesh) {
     mesh.material = cell.marked ? view.markMaterial : view.cubeMaterials[cell.y];
   }
-  navigator.vibrate?.(15);
+  buzz(15);
   refreshClues();          // a decided cube can retire the clues around it
 }
 
@@ -1037,7 +1646,7 @@ function finish(result) {
   const packDone = pack.shapes.every((n) => save.best[n]);
 
   ui.again.textContent = won
-    ? (packDone ? 'See the collection' : 'Next in pack')
+    ? (packDone ? 'See the collection' : 'Carve the next one')
     : 'Try again';
   ui.again.onclick = won
     ? (packDone ? toCollection : nextInPack)
@@ -1045,11 +1654,248 @@ function finish(result) {
 
   // Always a way back to the four, whichever way the level ended.
   ui.pick.hidden = won && packDone;
+  ui.pick.textContent = won ? 'Go to the Collection' : 'Choose a level';
   ui.pick.onclick = toCollection;
 
-  // The card is built now but stays hidden. Examine mode shows the sculpture
-  // first; the X hands over to this.
-  enterExamine();
+  // The card is built now but stays hidden either way. A win earns the
+  // reveal; a crack goes straight to the turntable and waits behind the X,
+  // because there is nothing to show off and a victory lap over a failure
+  // is the wrong note.
+  ui.banner.classList.toggle('reward', won);
+  if (won) beginReveal();
+  else enterExamine();
+}
+
+/* ---------- THE REVEAL ----------
+   What was here before: the last block came away and Examine mode started
+   in the same frame, from whatever angle the player's last tap happened to
+   leave the camera at. It was not wrong, it was just over — the sculpture
+   appeared and nothing marked it.
+
+   Three beats, and the GAPS are the design:
+
+     SETTLE  (0.45s) Nothing moves. The last burst is still falling and the
+                     dust is still in the air, and cutting the camera into
+                     that would throw away the one moment the player is
+                     actually looking at what they made.
+     MOVE    (2.2s)  Two and a third radians round, easing in and out, with
+                     a slight pull back at the midpoint before it pushes in
+                     closer than the fitted distance. The pull back is what
+                     makes it read as a camera rather than a lerp: it opens
+                     the shape up, then comes to it.
+     BREATH  (0.6s)  The camera has landed and it STAYS landed, with no UI
+                     at all, before anything is asked of the player. This is
+                     the beat the old flow was missing. A choice that
+                     appears the instant a move ends reads as the move
+                     having been a loading spinner for the choice.
+
+   Then the card rises from the bottom — see #banner.reward in carve.css —
+   and the turntable takes over. Deliberately not the full-screen scrim the
+   loss card uses: the sculpture stays visible above the card and stays
+   draggable, so the reward is still on screen while the question is asked.
+
+   Total is a little over three seconds, which is a long time on the fortieth
+   level. So any pointer skips to the end. */
+
+const reveal = {
+  phase: 'off',      // off | settle | move | breath
+  t: 0,
+  fromTheta: 0, fromPhi: 0, fromRadius: 0,
+  toTheta: 0, toPhi: 0, toRadius: 0,
+  from: new THREE.Vector3(), to: new THREE.Vector3(),   // look-at, eased
+  arc: 0,
+};
+
+/* Reused by frameReveal; it runs once per win, but allocating a basis and a
+   bounding box per win for the life of the app is pointless churn. */
+const revealDir = new THREE.Vector3();
+const revealRight = new THREE.Vector3();
+const revealUp = new THREE.Vector3();
+const revealMin = new THREE.Vector3();
+const revealMax = new THREE.Vector3();
+const revealCentre = new THREE.Vector3();
+const revealCorner = new THREE.Vector3();
+const revealTarget = new THREE.Vector3();
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
+/* Where the camera should end up to show THIS sculpture off.
+
+   fitCamera() cannot answer this and should not try. It runs once per level
+   and solves a different problem: fit the whole MASS, at every angle the
+   player can drag to, into the whole viewport. By the time the reveal runs,
+   two thirds of that is wrong — most of the mass is gone, only one angle is
+   going to be used, and a third of the viewport is about to be a card.
+
+   So this solves the actual problem: fit what is LEFT, at the one angle we
+   are landing on, into the strip of screen that will still be visible. Same
+   method as fitCamera — every corner of the bounding box tested against the
+   camera basis, with depth added because a corner nearer the camera needs
+   more room than one further away. */
+function frameReveal(theta, phi) {
+  const tanV = Math.tan((view.camera.fov * Math.PI) / 360);
+  const tanH = tanV * view.camera.aspect;
+
+  revealDir.setFromSphericalCoords(1, phi, theta);      // target -> camera
+  revealRight.crossVectors(WORLD_UP, revealDir).normalize();
+  revealUp.crossVectors(revealDir, revealRight).normalize();
+
+  // The sculpture's own bounds, not the block's.
+  revealMin.set(Infinity, Infinity, Infinity);
+  revealMax.set(-Infinity, -Infinity, -Infinity);
+  let found = false;
+
+  for (const cell of state.cells) {
+    if (!cell.keeper) continue;
+    const mesh = view.meshByKey.get(cell.key);
+    if (!mesh) continue;
+    revealMin.min(mesh.position);
+    revealMax.max(mesh.position);
+    found = true;
+  }
+
+  // No keepers standing should be impossible on a win, but a framing
+  // routine is not the place to find out the hard way.
+  if (!found) {
+    revealTarget.set(0, (CONFIG.GRID.y - 1) / 2 * CONFIG.CUBE, 0);
+    return { radius: view.fitRadius, target: revealTarget };
+  }
+
+  const half = (CONFIG.CUBE - CONFIG.GAP) / 2;
+  revealMin.subScalar(half);
+  revealMax.addScalar(half);
+  revealCentre.addVectors(revealMin, revealMax).multiplyScalar(0.5);
+
+  const band = CONFIG.REVEAL_BAND_BOTTOM - CONFIG.REVEAL_BAND_TOP;
+  let radius = 0;
+
+  for (const sx of [0, 1]) for (const sy of [0, 1]) for (const sz of [0, 1]) {
+    revealCorner.set(
+      (sx ? revealMax : revealMin).x - revealCentre.x,
+      (sy ? revealMax : revealMin).y - revealCentre.y,
+      (sz ? revealMax : revealMin).z - revealCentre.z);
+
+    const depth = revealCorner.dot(revealDir);
+    radius = Math.max(radius,
+      Math.abs(revealCorner.dot(revealUp)) / (tanV * band) + depth,
+      Math.abs(revealCorner.dot(revealRight)) / tanH + depth);
+  }
+
+  radius *= 1.04;
+
+  /* Aim at the SCULPTURE, not at where the block used to be. The extents
+     above are measured about the sculpture's own centre, so aiming anywhere
+     else silently invalidates them — which is exactly what happened: Well
+     and Turtle sit off-centre in their block and ran 12px off the side of a
+     375px screen while the fit calculation insisted they fitted.
+
+     Orbiting the sculpture's centre is also the better turntable: an
+     off-centre shape stays put while the background swings, rather than the
+     shape swinging around a point beside it. */
+  revealTarget.copy(revealCentre);
+
+  /* Then put its middle at the middle of the BAND rather than of the
+     screen. This one shift is along world Y and not camera-up on purpose:
+     the turntable keeps turning after this lands, and a camera-up offset
+     would rotate with it and make the composition drift. */
+  const bandCentre = (CONFIG.REVEAL_BAND_TOP + CONFIG.REVEAL_BAND_BOTTOM) / 2;
+  const ndc = 1 - 2 * bandCentre;              // +1 screen top, -1 bottom
+  // Guarded: at a near-overhead angle world Y barely projects to screen Y,
+  // and the correction would run away to infinity.
+  revealTarget.y -= (ndc * radius * tanV) / Math.max(0.25, revealUp.y);
+
+  return { radius, target: revealTarget };
+}
+
+/* Re-solve the framing for the current viewport. Mid-move it only moves the
+   destination, so the ease carries on into the new answer instead of
+   jumping; once landed it applies straight away. */
+function reframeReveal() {
+  const framing = frameReveal(reveal.toTheta, reveal.toPhi);
+  reveal.toRadius = framing.radius;
+  reveal.to.copy(framing.target);
+  reveal.arc = view.fitRadius * CONFIG.REVEAL_ARC;
+
+  if (reveal.phase !== 'off') return;
+  view.spherical.radius = framing.radius;
+  view.target.copy(framing.target);
+  updateCamera();
+}
+
+function beginReveal() {
+  gameplayStop();       // the run is over; this is a break
+  view.examining = true;
+  view.turntablePause = Infinity;    // the reveal owns the camera until it lands
+
+  ui.banner.hidden = true;
+  ui.examineExit.hidden = true;      // nothing to exit: the choice comes to you
+  document.body.classList.add('examining', 'revealing');
+
+  reveal.fromTheta = view.spherical.theta;
+  reveal.fromPhi = view.spherical.phi;
+  reveal.fromRadius = view.spherical.radius;
+  reveal.from.copy(view.target);
+
+  reveal.toTheta = reveal.fromTheta + CONFIG.REVEAL_TURN;
+  reveal.toPhi = CONFIG.REVEAL_PHI;
+  const framing = frameReveal(reveal.toTheta, reveal.toPhi);
+  reveal.toRadius = framing.radius;
+  reveal.to.copy(framing.target);
+  reveal.arc = view.fitRadius * CONFIG.REVEAL_ARC;
+
+  // Reduced motion gets the destination without the journey. It still gets
+  // the framing — landing on a considered angle is composition, not motion.
+  if (calm) { landReveal(); return; }
+
+  reveal.phase = 'settle';
+  reveal.t = 0;
+}
+
+function stepReveal(dt) {
+  reveal.t += dt;
+
+  if (reveal.phase === 'settle') {
+    if (reveal.t >= CONFIG.REVEAL_SETTLE) { reveal.phase = 'move'; reveal.t = 0; }
+    return;
+  }
+
+  if (reveal.phase === 'move') {
+    const p = Math.min(reveal.t / CONFIG.REVEAL_MOVE, 1);
+    // easeInOutCubic. A camera that starts and stops at zero velocity is the
+    // difference between a move and a slide.
+    const e = p < 0.5 ? 4 * p * p * p : 1 - ((-2 * p + 2) ** 3) / 2;
+
+    view.spherical.theta = reveal.fromTheta + (reveal.toTheta - reveal.fromTheta) * e;
+    view.spherical.phi = reveal.fromPhi + (reveal.toPhi - reveal.fromPhi) * e;
+    view.spherical.radius = reveal.fromRadius
+      + (reveal.toRadius - reveal.fromRadius) * e
+      + Math.sin(p * Math.PI) * reveal.arc;      // out at the midpoint, in by the end
+    view.target.lerpVectors(reveal.from, reveal.to, e);
+    updateCamera();
+
+    if (p >= 1) { reveal.phase = 'breath'; reveal.t = 0; }
+    return;
+  }
+
+  // breath: hold, and ask nothing.
+  if (reveal.t >= CONFIG.REVEAL_BREATH) landReveal();
+}
+
+/* The end of the sequence, wherever it was interrupted. Snapping to the
+   destination rather than stopping where the skip happened means an
+   impatient player and a patient one end up looking at the same framing. */
+function landReveal() {
+  if (reveal.phase === 'off' && !ui.banner.hidden) return;
+
+  reveal.phase = 'off';
+  view.spherical.theta = reveal.toTheta;
+  view.spherical.phi = reveal.toPhi;
+  view.spherical.radius = reveal.toRadius;
+  view.target.copy(reveal.to);
+  updateCamera();
+
+  view.turntablePause = 0;                 // the slow turn takes over
+  document.body.classList.remove('revealing');
+  ui.banner.hidden = false;
 }
 
 /* ---------- EXAMINE MODE ----------
@@ -1072,12 +1918,19 @@ function enterExamine() {
 }
 
 function exitExamine() {
-  view.examining = false;
-  ui.examineExit.hidden = true;
-  document.body.classList.remove('examining');
-
+  leaveExamine();
   applyAudit(false);
   ui.banner.hidden = false;      // now the results, once they've had a look
+}
+
+/* Everything examine mode turned on, turned off. Its own function because
+   there are now two ways out — the X on a crack, and simply starting the
+   next level from the reward card, which the win path leaves examining. */
+function leaveExamine() {
+  view.examining = false;
+  reveal.phase = 'off';
+  ui.examineExit.hidden = true;
+  document.body.classList.remove('examining', 'revealing');
 }
 
 function stepExamine(dt, now) {
@@ -1213,6 +2066,12 @@ function initInput() {
 
   el.addEventListener('pointerdown', (e) => {
     if (state.paused) return;
+
+    // Three seconds of reveal is right the first time and long the fortieth.
+    // Any touch takes the ending; it does not also start a drag, so the
+    // gesture that skipped is not also the gesture that spun the sculpture.
+    if (reveal.phase !== 'off') { landReveal(); return; }
+
     ui.hint.classList.add('gone');
     startAudio();
     holdTurntable();
@@ -1326,6 +2185,13 @@ function updateHUD() {
   ui.clueBtn.querySelector('b').textContent = state.clueMode;
   ui.muteBtn.querySelector('b').textContent = save.muted ? 'Off' : 'On';
   ui.focusBtn.querySelector('b').textContent = save.focus || 'off';
+
+  // Says "Off (system)" rather than lying about being on, when the OS
+  // reduced-motion setting is what is actually silencing it.
+  ui.hapticsBtn.hidden = !hasHaptics;
+  ui.hapticsBtn.querySelector('b').textContent = calm ? 'Off (system)'
+    : save.haptics === false ? 'Off' : 'On';
+  ui.hapticsBtn.disabled = calm;
   ui.hintBtn.textContent = isZen() ? 'Hint · ∞' : `Hint · ${state.hintsLeft}`;
   ui.hintBtn.disabled = !isZen() && state.hintsLeft <= 0;
 }
@@ -1352,6 +2218,7 @@ function loadLevel(index) {
   writeSave();
 
   disposeVoxels();
+  clearEffects();          // nothing from the last level flies into this one
   buildLevel();
   validateLevel();
   buildVoxels();
@@ -1359,9 +2226,15 @@ function loadLevel(index) {
   state.hintsLeft = CONFIG.HINTS;
   resetMusicLayers();
   applyTheme(themeFor(LEVELS[levelIndex].pack));
+
+  // The reward card sits ON TOP of a live examine session, so "Carve the
+  // next one" arrives here with the turntable still turning and the HUD
+  // still faded out. Without this the next level plays with no controls.
+  leaveExamine();
   fitCamera();                    // also re-centres the target on the new mass
 
   ui.banner.hidden = true;
+  ui.banner.classList.remove('reward');
   updateHUD();
   gameplayStart();                // a level starting is gameplay resuming
 }
@@ -1926,6 +2799,14 @@ function cycleFocus() {
       : `Binaural · ${FOCUS.beat}Hz · needs headphones`);
 }
 
+function toggleHaptics() {
+  save.haptics = save.haptics === false;
+  writeSave();
+  updateHUD();
+  buzz(20);            // confirm it in the hand, which is the whole point
+  toast(save.haptics ? 'Vibration on' : 'Vibration off');
+}
+
 function toggleMute() {
   save.muted = !save.muted;
   writeSave();
@@ -2069,6 +2950,8 @@ ui.muteBtn = document.getElementById('mute-btn');
 ui.muteBtn.addEventListener('click', toggleMute);
 ui.focusBtn = document.getElementById('focus-btn');
 ui.focusBtn.addEventListener('click', cycleFocus);
+ui.hapticsBtn = document.getElementById('haptics-btn');
+ui.hapticsBtn.addEventListener('click', toggleHaptics);
 
 ui.adsBtn = document.getElementById('ads-btn');
 ui.adsBtn.addEventListener('click', () => { closeSheet(); openConsent(); });
@@ -2136,6 +3019,10 @@ initScene();
 buildVoxels();
 initInput();
 initShards();
+initDust();
+initCuts();
+// After initShards/initDust/initCuts: applyTheme reaches into the shard
+// materials to hang the finish on them, and they have to exist first.
 applyTheme(themeFor(LEVELS[levelIndex].pack), true);
 initAds();
 initCrazy();
@@ -2160,8 +3047,15 @@ window.Carve = {
   initAds, consentState, needsConsent, setConsent, openConsent, consentLabel,
   syncAdsRow, registerServiceWorker,
   toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
-  burst, shards, enterExamine, exitExamine, applyAudit, zoomBy,
-  applyTheme, themeState, rampColour, SIGNALS,
+  burst, shards, enterExamine, exitExamine, leaveExamine, applyAudit, zoomBy,
+  applyTheme, themeState, rampColour, SIGNALS, applyFinish,
+  dust, puff, cuts, cutFaces, spark, shake, addShake,
+  reveal, beginReveal, landReveal, frameReveal, reframeReveal,
+  // The per-frame half of each effect, so the frame cost can be measured
+  // rather than guessed at. Everything here is driven by renderFrame; call
+  // them by hand only to profile.
+  stepShards, stepDust, stepCuts, stepSpark, stepShake, stepReveal, clearEffects,
+  buzz, toggleHaptics, hasHaptics, get calm() { return calm; },
   CRAZY, initCrazy, requestCrazyAd, fractureThenAd, pauseForAd, resumeAfterAd,
   gameplayStart, gameplayStop, fadeMaster, syncPlatformSave,
   FOCUS, focus, startFocus, stopFocus, cycleFocus,

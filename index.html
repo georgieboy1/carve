@@ -17,7 +17,7 @@
        That is the whole of "mutually exclusive ad stacks" — enforced at
        runtime, so the two builds cannot drift apart in anything but this. -->
 
-  <link rel="stylesheet" href="carve.css?v=6">
+  <link rel="stylesheet" href="carve.css?v=7">
 </head>
 <body>
   <div id="bg-a" class="bg"></div>
@@ -67,6 +67,10 @@
       <button id="clue-btn" class="row" type="button"><span>Clues</span><b>Chips</b></button>
       <button id="mute-btn" class="row" type="button"><span>Sound</span><b>On</b></button>
       <button id="focus-btn" class="row" type="button"><span>Tone</span><b>Off</b></button>
+      <!-- Hidden on any device without a vibrator, which is every desktop
+           and all of iOS — a switch for something that cannot happen is
+           worse than no switch. -->
+      <button id="haptics-btn" class="row" type="button" hidden><span>Vibration</span><b>On</b></button>
       <!-- Hidden entirely when no publisher id is set, so the game never
            offers a setting for something that cannot happen. -->
       <button id="ads-btn" class="row" type="button" hidden><span>Ads</span><b>Ask</b></button>
@@ -127,6 +131,6 @@
     }
   }
   </script>
-  <script type="module" src="carve.js?v=16"></script>
+  <script type="module" src="carve.js?v=17"></script>
 </body>
 </html>

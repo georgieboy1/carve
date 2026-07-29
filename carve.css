@@ -259,6 +259,14 @@ a.pill { text-decoration: none; display: inline-block; }
   cursor: pointer;
 }
 
+/* display:flex above beats the [hidden] attribute's user-agent
+   display:none, so a hidden row went on rendering. .btn has this rule and
+   .row never did, which is why the Ads row has been showing "Ask" on a
+   build with no publisher id — the one state initAds() is written to make
+   unreachable. Found while adding the Vibration row, which needs to
+   disappear entirely on iOS, where navigator.vibrate does not exist. */
+.row[hidden] { display: none; }
+
 .row b { color: var(--mint); text-transform: capitalize; }
 
 .sheet-note {
@@ -449,9 +457,66 @@ body.examining #hud { transition: opacity .4s ease; }
   100% { transform: translateY(0) scale(1) }
 }
 
+/* ---------- THE REWARD CARD ----------
+   A win does not get the modal treatment. The whole point of the reveal is
+   that the sculpture is on screen, and a centred card behind a blurred
+   scrim covers the thing it is congratulating you for — which is the bug
+   the old flow had at the moment of finishing.
+
+   So on a win the card is a sheet at the bottom, the scrim is a gradient
+   that fades out well before the sculpture, and the backdrop blur is gone
+   entirely. pointer-events stay off everywhere except the card itself, so
+   the turntable above it is still draggable and zoomable while the choice
+   sits there waiting. A crack keeps the modal: there is nothing to look at
+   and no reason to invite the player to look at it. */
+#banner.reward {
+  place-items: end center;
+  padding: 0 16px calc(16px + env(safe-area-inset-bottom));
+  background: linear-gradient(to top,
+    rgba(74,59,73,.26) 0%, rgba(74,59,73,.10) 30%, transparent 58%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: none;
+}
+
+#banner.reward #banner-card {
+  pointer-events: auto;
+  padding: 18px 22px 16px;
+  animation: rise .7s cubic-bezier(.22,1,.36,1) both;
+  box-shadow: 0 12px 40px rgba(74,59,73,.28);
+}
+
+#banner.reward #banner-emoji { font-size: 32px; margin-bottom: 4px; }
+#banner.reward #banner-title { font-size: 20px; }
+#banner.reward #banner-body { margin-bottom: 14px; }
+
+/* Rises rather than drops, and does not overshoot. The drop animation is a
+   pleasant interruption; this one is the end of a slow move and should
+   settle into it, not bounce off it. */
+@keyframes rise {
+  from { transform: translateY(30px); opacity: 0 }
+  to   { transform: translateY(0); opacity: 1 }
+}
+
 #banner-emoji { font-size: 42px; margin-bottom: 10px; }
 #banner-title { font-size: 22px; font-weight: 700; margin-bottom: 7px; }
 #banner-body { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin-bottom: 20px; }
+
+/* Struck one at a time, after the card has arrived. Three stars landing
+   together is a status readout; three stars landing in sequence is a score.
+   The delays are relative to the card's own rise, hence the head start. */
+#banner-stars .star {
+  display: inline-block;
+  animation: star-strike .4s cubic-bezier(.2,1.45,.45,1) both;
+}
+#banner-stars .star:nth-child(1) { animation-delay: .30s }
+#banner-stars .star:nth-child(2) { animation-delay: .42s }
+#banner-stars .star:nth-child(3) { animation-delay: .54s }
+
+@keyframes star-strike {
+  from { transform: scale(.3); opacity: 0 }
+  to   { transform: scale(1); opacity: 1 }
+}
 
 .btn {
   display: block; width: 100%; padding: 14px; border: 0; border-radius: 15px;
@@ -466,7 +531,21 @@ body.examining #hud { transition: opacity .4s ease; }
 .btn:disabled { opacity: .65; cursor: default; transform: none; }
 .btn-ghost { background: transparent; color: var(--ink-soft); }
 
+/* Everything that moves, in one block. carve.js reads the same query for
+   the WebGL side — the camera shake, the dust, the impact light and the
+   reveal camera move — so these two are halves of one answer. What is
+   deliberately NOT removed: opacity fades. A cross-fade carries no motion
+   and reduced-motion is not a request for content to appear without
+   warning. */
 @media (prefers-reduced-motion: reduce) {
-  #banner-card { animation: none; }
+  #banner-card,
+  #banner.reward #banner-card,
+  #banner-stars .star,
+  #examine-exit,
+  #zen-card,
+  #consent-card { animation: none; }
+
   #progress-fill, .heart, #hint { transition: none; }
+  .btn, #examine-exit { transition: none; }
+  .btn:active, #examine-exit:active { transform: none; }
 }

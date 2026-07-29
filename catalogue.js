@@ -24,8 +24,8 @@ const grid = document.getElementById('grid');
 const rows = LEVELS.map((shape) => {
   const { cells, grid: g } = parse(shape);
   const report = validate(shape);
-  const ramp = themeForShape(shape.name).ramp;
-  const url = thumbnail(cells.values(), g, (y) => layerMaterial(ramp, y, g.y));
+  const theme = themeForShape(shape.name);
+  const url = thumbnail(cells.values(), g, (y) => layerMaterial(theme, y, g.y));
   return { shape, report, g, kept: cells.size, url };
 });
 
