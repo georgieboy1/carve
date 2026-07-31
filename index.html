@@ -17,7 +17,7 @@
        That is the whole of "mutually exclusive ad stacks" — enforced at
        runtime, so the two builds cannot drift apart in anything but this. -->
 
-  <link rel="stylesheet" href="carve.css?v=7">
+  <link rel="stylesheet" href="carve.css?v=8">
 </head>
 <body>
   <div id="bg-a" class="bg"></div>
@@ -45,6 +45,11 @@
   <div id="hint">Drag to spin &middot; Tap to carve &middot; Hold to keep</div>
 
   <div id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Shown while the player has frozen the game with ESC or Space. Portals
+       require a reachable interrupt; a frozen game with no indication that it
+       is frozen reads as a crash. -->
+  <div id="pause-tag" role="status" hidden>Paused &middot; press <b>Esc</b> to resume</div>
 
   <!-- Examine mode: the only chrome left on screen while the sculpture turns. -->
   <button id="examine-exit" type="button" aria-label="Done examining" hidden>&times;</button>
@@ -131,6 +136,6 @@
     }
   }
   </script>
-  <script type="module" src="carve.js?v=22"></script>
+  <script type="module" src="carve.js?v=23"></script>
 </body>
 </html>

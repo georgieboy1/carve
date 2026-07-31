@@ -3616,17 +3616,39 @@ const gameplayStop = () => { if (CRAZY.ready) CRAZY.sdk.game.gameplayStop(); };
    the canvas never goes black behind the ad, but nothing advances. */
 function pauseForAd() {
   CRAZY.adOpen = true;
+  freeze();
+}
+
+function resumeAfterAd() {
+  CRAZY.adOpen = false;
+  thaw();
+}
+
+/* The freeze itself, separated from the ad that used to be its only caller.
+
+   Portals require a player-reachable interrupt, not just one the ad SDK can
+   trigger: press ESC and the loop, the sound and the clock all stop at once.
+   Everything downstream of state.paused already behaves — the frame loop
+   skips every step*(), input is swallowed, and rendering deliberately keeps
+   running so the canvas does not go black behind whatever is on top. */
+function freeze() {
+  if (state.paused) return;
   state.paused = true;
   gameplayStop();
   fadeMaster(0, 0.2);
 }
 
-function resumeAfterAd() {
-  CRAZY.adOpen = false;
+function thaw() {
+  if (!state.paused) return;
+  // An ad still running outranks a player's ESC: resuming underneath it would
+  // put sound back over the video and let the board move while it plays.
+  if (CRAZY.adOpen) return;
   state.paused = false;
   fadeMaster(save.muted ? 0 : AUDIO.VOLUME, 0.4);
-  if (CRAZY.ready) CRAZY.sdk.game.gameplayStart();
+  gameplayStart();
 }
+
+const togglePause = () => (state.paused ? thaw() : freeze());
 
 /* Returns false when there is no SDK, so callers can fall through.
    `settled` guards the callbacks: an SDK that fires both adError and
@@ -3717,6 +3739,7 @@ ui.bannerBody = document.getElementById('banner-body');
 ui.clueBtn = document.getElementById('clue-btn');
 ui.hintBtn = document.getElementById('hint-btn');
 ui.toast = document.getElementById('toast');
+ui.pauseTag = document.getElementById('pause-tag');
 ui.levelName = document.getElementById('level-name');
 ui.pips = document.getElementById('pips');
 ui.again = document.getElementById('again');
@@ -3776,7 +3799,16 @@ document.getElementById('display-btn')
 document.getElementById('sheet-close').addEventListener('click', closeSheet);
 ui.sheet.addEventListener('click', (e) => { if (e.target === ui.sheet) closeSheet(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !ui.sheet.hidden) closeSheet();
+  /* ESC closes an open sheet first — that is what a player means by it when
+     something is open. With nothing open, ESC and Space are the interrupt. */
+  if (e.key === 'Escape' && !ui.sheet.hidden) { closeSheet(); return; }
+  if (e.key === 'Escape' || e.key === ' ') {
+    if (state.status !== 'playing') return;   // nothing to pause on a banner
+    e.preventDefault();                       // Space would scroll the page
+    togglePause();
+    ui.pauseTag.hidden = !state.paused;
+    return;
+  }
 });
 
 /* The collection is the level select, so it hands the chosen level back
@@ -3839,7 +3871,7 @@ window.Carve = {
   stepShards, stepDust, stepCuts, stepSpark, stepShake, stepReveal, clearEffects,
   buzz, toggleHaptics, hasHaptics, get calm() { return calm; },
   CRAZY, initCrazy, requestCrazyAd, fracture, maybeInterstitial,
-  pauseForAd, resumeAfterAd,
+  pauseForAd, resumeAfterAd, freeze, thaw, togglePause,
   gameplayStart, gameplayStop, fadeMaster, syncPlatformSave,
   FOCUS, focus, startFocus, stopFocus, cycleFocus,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
