@@ -1635,7 +1635,7 @@ function carve(cellKey) {
     if (!isZen()) {
       refreshClues();
       updateHUD();
-      if (state.errors >= CONFIG.STARS) fractureThenAd();
+      if (state.errors >= CONFIG.STARS) fracture();
       return;
     }
 
@@ -2360,11 +2360,19 @@ function nextInPack() {
   const start = packStart(levelIndex);
   const size = packOf(levelIndex).shapes.length;
   const next = start + ((stepIn(levelIndex) + 1) % size);
-  loadLevel(next);
+  // Between two levels, after a win the player chose to move on from: the
+  // one moment in the loop where a full-screen ad interrupts nothing.
+  maybeInterstitial(() => loadLevel(next));
 }
 
 const retryLevel = () => loadLevel(levelIndex);
-const toCollection = () => { location.href = 'gallery.html'; };
+
+/* Leaving for the Collection is a genuine screen change, so it is a fair
+   place for a full-screen ad. Retry is not — a player who just lost and
+   immediately tapped again is mid-flow, not between screens. */
+const toCollection = () => {
+  maybeInterstitial(() => { location.href = 'gallery.html'; });
+};
 
 
 
@@ -3657,15 +3665,44 @@ function requestCrazyAd(type, { onFinished, onError } = {}) {
 /* The stone cracking is the natural break, so that is where the interstitial
    goes. Gameplay pauses, the ad plays over the frozen tower, and Examine
    mode opens once it clears — whether it finished, errored or timed out. */
-function fractureThenAd() {
+/* Losing used to fire a forced midgame interstitial and THEN show the banner
+   with a rewarded revive on it — two ads stacked on the worst moment in the
+   game. You mis-tap, the stone cracks, a video plays whether you want it or
+   not, and then you are asked to watch another one.
+
+   It also broke the placement rule it was written to follow. The interstitial
+   fired straight off a carve, with the player's finger still on the block.
+   That is not a screen transition, it is the middle of the action, and it is
+   the exact case where breaking focus costs you the session.
+
+   So the fracture is now quiet. The rewarded revive stays on the banner,
+   because that one is opt-in and hands something back. Interstitials moved to
+   real transitions — see maybeInterstitial(). */
+function fracture() {
   musicCrumble();
+  finish('lost');
+}
+
+/* Interstitials belong on transitions the player chose: leaving for the
+   Collection, or moving on after a win. Never on a carve, never on a loss.
+
+   Rate-limited because a portal will happily serve one every time you ask,
+   and a player who finishes three short levels in a row should not sit
+   through three videos. */
+const INTERSTITIAL_GAP_MS = 3 * 60 * 1000;
+let lastInterstitial = 0;
+
+function maybeInterstitial(onDone) {
+  const now = Date.now();
+  if (now - lastInterstitial < INTERSTITIAL_GAP_MS) return onDone();
 
   const requested = requestCrazyAd('midgame', {
-    onFinished: () => finish('lost'),
-    onError: () => finish('lost'),
+    onFinished: onDone,
+    onError: onDone,
   });
 
-  if (!requested) finish('lost');
+  if (requested) lastInterstitial = now;
+  else onDone();
 }
 
 /* ---------- BOOTSTRAP ---------- */
@@ -3801,7 +3838,8 @@ window.Carve = {
   // them by hand only to profile.
   stepShards, stepDust, stepCuts, stepSpark, stepShake, stepReveal, clearEffects,
   buzz, toggleHaptics, hasHaptics, get calm() { return calm; },
-  CRAZY, initCrazy, requestCrazyAd, fractureThenAd, pauseForAd, resumeAfterAd,
+  CRAZY, initCrazy, requestCrazyAd, fracture, maybeInterstitial,
+  pauseForAd, resumeAfterAd,
   gameplayStart, gameplayStop, fadeMaster, syncPlatformSave,
   FOCUS, focus, startFocus, stopFocus, cycleFocus,
   AUDIO, audio, startAudio, syncMusicLayers, resetMusicLayers,
