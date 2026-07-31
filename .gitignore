@@ -9,3 +9,8 @@ preview-*.html
 
 # Agent worktrees and local launch config - not part of the game.
 .claude/
+
+# Produced by tools-seal-packs.mjs on the paywall branch: the unsealed level
+# data it splits out of shapes.js. Never ship it - it is the plaintext of the
+# thing the sealing exists to hide.
+shapes.source.js

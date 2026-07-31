@@ -37,65 +37,75 @@ Rough map of `carve.js` (line numbers drift — grep, don't trust these):
 - ~1765–1935 focus tone (binaural / AM pulse)
 - ~1938+ CrazyGames platform layer
 
-## DIRECTION — app stores, decided 2026-07-29
+## DIRECTION — web portal with accounts and payments
 
-Carve is going to the **App Store and Google Play** as a wrapped build of this
-same codebase. That replaces an earlier plan to sell packs on the web through
-Stripe, and the reasoning is worth keeping, because it is the kind of decision
-that gets re-litigated:
+Confirmed 2026-07-29, after briefly considering the app stores and reversing.
+`PLAN-APPSTORE-NOT-TAKEN.md` records that analysis; it is not the plan.
 
-Everything that plan needed — Google sign-in, a Cloudflare Worker, a D1
-database, sessions, Stripe Checkout, a webhook, an entitlement table, an
-offline grace window, a save merge, and a Google-certified CMP — existed to
-answer one question: *did this person pay?* StoreKit and Play Billing answer
-it natively. The receipt **is** the entitlement: validated by the OS, working
-offline, surviving reinstalls, with no server of ours anywhere in it.
+Carve sells packs **on the web**, through its own accounts and payment flow.
+That means a backend, because entitlement has to be checked somewhere the
+player cannot edit.
 
-So the backend is not deferred, it is **deleted**. `carve-api` is archived
-unbuilt. `sealed.js`, `unlock.js`, `store.js` and `tools-seal-packs.mjs` were
-reverted off `main` and preserved on the `abandoned/web-paywall` branch.
+### Where the work already is
 
-**The sealing is gone and should not come back.** It existed because on the
-open web anyone can read level data straight out of `shapes.js`. Inside an app
-bundle the data ships in the binary, and the norm is simply a purchased flag.
-Encrypting it bought friction that IAP gives for free, at the cost of a
-key-distribution problem with no good answer.
+Nothing was thrown away during the detour. Both halves exist:
 
-What this costs, stated plainly: 15–30% of revenue instead of Stripe's ~3%, a
-$99/yr Apple account, review latency in place of push-to-deploy, and the
-CrazyGames channel.
+- **`abandoned/web-paywall` branch** — `sealed.js`, `unlock.js`, `store.js`,
+  `tools-seal-packs.mjs`, plus the `shapes.js` change that moves paid layer
+  data into the sealed blob. Six commits.
+- **`~/Code/carve-api`** — nine commits, schema and Google sign-in, ported to
+  **PHP + MySQL** for Bluehost after an initial Cloudflare Workers + D1
+  version. Never deployed. Delete its `ARCHIVED.md` when work resumes.
 
-### What the web build is now
+### The sequencing rule that survives every direction change
 
-The free demo. Free packs only, **no accounts, no payments, no Stripe**. That
-matters beyond tidiness: it keeps `privacy.html` true, which the paid web plan
-would have made false.
+**Do not push the sealing to `main` until entitlement can unseal it.**
 
-### Consequences for anyone working in here
+The sealing commit replaces the paid packs' layer data in `shapes.js` with
+`null` and moves it into an AES-GCM blob. Deploying that without a working
+entitlement service means every player who owns a paid pack loses access to
+levels they already have, because the data now needs a key nobody is handing
+out. The paywall is ready; the thing that opens it is not.
 
-- **Do not build a backend.** No auth, no sessions, no entitlement service.
-- **Entitlement is a store receipt**, read through the IAP plugin. There is no
-  server to ask.
-- **Ads are AdMob** on mobile, not AdSense — and Google's UMP SDK *is* a
-  certified CMP, so the consent problem the web plan had is solved by using
-  the mobile SDK rather than by integrating a third-party one.
-- The existing `initAds` / `setConsent` gate is for the **web** build only.
+This is why the branch exists rather than the work sitting on `main`.
 
-The execution plan lives in `PLAN-APPSTORE.md`.
+### Why sealing is still needed here, unlike on a store
+
+On the open web the level data is served to anyone who asks. So entitlement
+alone is not enough — the server has to hold a key and hand it only to
+entitled players, and the data has to be encrypted at rest in the bundle. That
+is what `sealed.js` is for. It is *not* redundant with server entitlement;
+the two are halves of the same mechanism.
+
+Its known weakness is key sharing: one key handed to one buyer can be passed
+on. Server-side entitlement narrows that (keys are per-user and revocable) but
+does not eliminate it. Accept that, or the design needs rethinking.
+
+### Still blocked on external accounts
+
+None of this can start until these exist. They were blockers before the
+detour and are unchanged by it:
+
+- GitHub auth (`gh auth login --web`) for the `carve-api` remote
+- The chosen host — Bluehost, per the PHP port
+- Stripe MCP authorization (`/mcp`), and a Stripe account
+- A Google Cloud OAuth client, which needs a **published privacy policy URL**
+- A **Google-certified CMP** before any EEA/UK ad serving. The existing
+  `initAds` / `setConsent` gate is good engineering and is not on that list.
 
 ## HARD CONSTRAINTS — do not break these
 
-1. **Zero external requests — still binding on the web build.** No audio
-   files, no images, no fonts, no CDN beyond the existing pinned three.js
-   import map. Everything is generated at runtime — audio via Web Audio
-   synthesis, graphics via geometry or inline SVG. `privacy.html` states the
-   site makes no third-party requests other than jsDelivr for three.js;
-   adding any would make that page a lie.
+1. **Zero external requests — being retired deliberately, not abandoned.**
+   Google sign-in, Stripe and ads are all external requests, so the rule
+   cannot survive the direction above. What survives is the reason behind it:
+   every third party is one more entry `privacy.html` must name and one more
+   thing needing consent before it loads. Add them one at a time, and **update
+   `privacy.html` in the same commit** rather than treating the rule as gone.
 
-   The **app** build relaxes this: the store SDKs and AdMob are external by
-   nature. But they live behind the native layer, not in this codebase, and
-   each one is still a line the app's privacy disclosure has to name. Add them
-   deliberately, not casually.
+   Until those land, the rule still holds: no audio files, no images, no
+   fonts, no CDN beyond the pinned three.js import map. Everything generated
+   at runtime — audio via Web Audio synthesis, graphics via geometry or
+   inline SVG.
 2. **Mobile-first.** Portrait phone is the primary target. Test at 375px.
    Thumb-zone controls stay reachable; don't add chrome to the bottom-right.
 3. **Don't touch** the consent gate (`initAds`, `setConsent`, `openConsent`),

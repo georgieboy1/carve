@@ -1,3 +1,10 @@
+> **NOT THE CURRENT DIRECTION.** Reversed 2026-07-29, same day it was written;
+> Carve stays on the web portal plan. Kept because the analysis is still sound
+> and the trade-offs are the ones any future store decision has to weigh —
+> particularly the 15–30% cut, the Apple 4.2 webview-wrapper risk, and the fact
+> that Google's UMP SDK is a certified CMP where the web needs a third-party
+> one. The live plan is the web portal; see `AGENT-CONTEXT.md`.
+
 # Carve — App Store execution plan
 
 Decided 2026-07-29. Supersedes the web-payments plan, which is archived on the
