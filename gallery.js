@@ -15,9 +15,9 @@
    the fold came out blank.
    ============================================================ */
 
-import { PACKS, byName, parse } from './shapes.js';
-import { thumbnail, layerMaterial, blankMaterial } from './thumbs.js';
-import { themeFor } from './themes.js';
+import { PACKS, byName, parse } from './shapes.js?v=1785541867';
+import { thumbnail, layerMaterial, blankMaterial } from './thumbs.js?v=1785541867';
+import { themeFor } from './themes.js?v=1785541867';
 
 const SAVE_KEY = 'carve.save';
 

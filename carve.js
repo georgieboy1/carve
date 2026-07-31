@@ -17,8 +17,8 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js';
-import { SIGNALS, themeFor, finishOf, woodGrainCanvas } from './themes.js';
+import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js?v=1785541867';
+import { SIGNALS, themeFor, finishOf, woodGrainCanvas } from './themes.js?v=1785541867';
 
 /* ---------- MOTION PREFERENCE ----------
    Read once into a plain boolean rather than calling matches() in the frame
@@ -2096,19 +2096,116 @@ function zoomBy(factor) {
    at the wrong cube and destroy trust in the button. */
 
 function findHint() {
+  /* The bug this fixes was invisible and expensive. `struck` is only ever set
+     when the player HITS a keeper by mistake, so the old single pass could
+     only count sculpture the player had already been punished for finding. It
+     never chained either: "these two are sculpture, therefore that one is
+     waste" was out of reach, and the button answered "no certain move" on
+     boards that were fully determined. Players were told to guess by the
+     feature whose one job is to prove they don't have to.
+
+     The tempting fix — also count the player's marks — is wrong. A mark is a
+     GUESS. Reasoning from a wrong one points confidently at the wrong cube,
+     which is worse than admitting uncertainty, because it is the button they
+     trust when they have stopped trusting themselves.
+
+     So: run the rules to a fixed point over a scratch copy. Ground truth seeds
+     it — carved and struck cells only, never marks. Everything the pass adds
+     is DERIVED from that, so it is exactly as reliable as the board itself. */
+
+  const known = new Map();     // key -> 'waste' | 'keeper'
   for (const cell of state.cells) {
-    if (!cell.carved) continue;
-
-    const neighbours = neighboursOf(cell);
-    const knownKeepers = neighbours.filter((n) => n.struck).length;
-    const unknown = neighbours.filter((n) => !n.carved && !n.struck);
-    if (!unknown.length) continue;
-
-    const remaining = cell.near - knownKeepers;
-    if (remaining === 0) return { kind: 'carve', cell: unknown[0], from: cell };
-    if (remaining === unknown.length) return { kind: 'keep', cell: unknown[0], from: cell };
+    if (cell.carved) known.set(cell.key, 'waste');
+    else if (cell.struck) known.set(cell.key, 'keeper');
   }
-  return null;
+
+  const totalKeepers = state.cells.length - state.wasteTotal;
+  const clueCells = () => {
+    const out = [];
+    for (const cell of state.cells) {
+      if (known.get(cell.key) !== 'waste') continue;
+      const neighbours = neighboursOf(cell);
+      const keepers = neighbours.filter((n) => known.get(n.key) === 'keeper').length;
+      const unknown = neighbours.filter((n) => !known.has(n.key));
+      if (unknown.length) out.push({ cell, unknown, need: cell.near - keepers });
+    }
+    return out;
+  };
+
+  // Bounded by the cell count: every pass that changes anything decides at
+  // least one cube, and cubes never un-decide.
+  let moved = true;
+  while (moved) {
+    moved = false;
+
+    // The two basic rules, now remembering what they proved.
+    for (const { unknown, need } of clueCells()) {
+      if (need === 0) { unknown.forEach((n) => known.set(n.key, 'waste')); moved = true; }
+      else if (need === unknown.length) { unknown.forEach((n) => known.set(n.key, 'keeper')); moved = true; }
+    }
+
+    /* The subset rule. Two clues whose unknown cubes overlap say more together
+       than either alone: if everything clue A sees is also visible to B, the
+       cubes only B sees must account for exactly the difference in what they
+       need. It is how a person actually reads a board — "that 2 and this 1 are
+       looking at the same pair, so the extra cube is sculpture" — and without
+       it the button could not follow the reasoning it asks the player to do. */
+    if (!moved) {
+      const clues = clueCells();
+      for (const a of clues) {
+        for (const b of clues) {
+          if (a === b || a.unknown.length >= b.unknown.length) continue;
+          if (!a.unknown.every((n) => b.unknown.includes(n))) continue;
+          const extra = b.unknown.filter((n) => !a.unknown.includes(n));
+          const need = b.need - a.need;
+          if (need === 0) { extra.forEach((n) => known.set(n.key, 'waste')); moved = true; }
+          else if (need === extra.length) { extra.forEach((n) => known.set(n.key, 'keeper')); moved = true; }
+        }
+      }
+    }
+
+    /* The counting rule. The HUD has been printing "blocks to carve" all
+       along, so how much sculpture remains is already public, and players use
+       it — "only two left and three cubes standing" is how these endgames
+       finish. Local clues can never see this: it is a fact about the whole
+       board, not any one neighbourhood. Monolith, the very first level, needs
+       exactly this argument, and the button used to stall there. */
+    if (!moved) {
+      let keepersFound = 0;
+      const undecided = [];
+      for (const cell of state.cells) {
+        const verdict = known.get(cell.key);
+        if (verdict === 'keeper') keepersFound++;
+        else if (!verdict) undecided.push(cell);
+      }
+      const keepersLeft = totalKeepers - keepersFound;
+      if (undecided.length && keepersLeft === 0) {
+        undecided.forEach((c) => known.set(c.key, 'waste')); moved = true;
+      } else if (undecided.length && keepersLeft === undecided.length) {
+        undecided.forEach((c) => known.set(c.key, 'keeper')); moved = true;
+      }
+    }
+  }
+
+  // Report the first cube the player has not resolved. Prefer a 'carve': it
+  // moves the level forward rather than telling someone to leave a cube alone.
+  let fallback = null;
+  for (const cell of state.cells) {
+    if (cell.carved || cell.struck) continue;
+    const verdict = known.get(cell.key);
+    if (!verdict) continue;
+
+    const from = neighboursOf(cell).find((n) => n.carved) || null;
+    const hint = { kind: verdict === 'waste' ? 'carve' : 'keep', cell, from };
+    if (verdict === 'waste') return hint;
+
+    /* Don't spend a hint telling someone what they already marked. The mark
+       still isn't trusted as INPUT — see above — but as output it means "you
+       have dealt with this". A mark that is actually wrong still gets
+       corrected: the proof comes back as a 'carve' above, not a 'keep' here. */
+    if (!fallback && !cell.marked) fallback = hint;
+  }
+  return fallback;
 }
 
 function useHint() {

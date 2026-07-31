@@ -16,7 +16,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { finishOf, woodGrainCanvas } from './themes.js';
+import { finishOf, woodGrainCanvas } from './themes.js?v=1785541867';
 
 const W = 300;
 const H = 276;
