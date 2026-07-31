@@ -580,12 +580,37 @@ export function validate(shape) {
    game is worth buying into, then themed sets. */
 
 export const PACKS = [
+  /* FIRST CUTS is the tutorial, and it teaches without a word of text. Every
+     level here clears the deducibility gate, and they are ordered by keeper
+     density — 11%, 33%, 47%, 55%, 60% — because density is what decides how
+     informative a clue can be. A sparse box gives up 0s and 1s and cascades
+     on its own; a full one makes you chain. So the curve is a real ramp in
+     the only variable that governs difficulty, and each level introduces one
+     idea by making it the only thing that works:
+
+       Monolith  a hair-thin column in a big box. Almost everything cascades
+                 from the opening cut. Teaches what a tap does, that numbers
+                 appear on cut faces, and that a 0 means "all clear".
+       Pillar    the sculpture now sits exactly where a sweeping player taps.
+                 The first slip usually happens here, at full stars, which is
+                 how the fail state introduces itself — survivably. Marking
+                 is the obvious defence and needs no prompting.
+       Pyramid   stepped, so the clue values change layer by layer. Reading
+                 a 1 against a 2 is the only way through.
+       Arch      the first level with a hole THROUGH it. Teaches that the
+                 silhouette, not the surface, is the thing being found.
+       Steps     densest of the five, and the first that needs a chain of two
+                 deductions rather than one clue read in isolation. */
   { id: 'first-cuts', name: 'First cuts', free: true,
-    shapes: ['Pillar', 'Diamond', 'Monolith', 'Acorn', 'Heart'] },
+    shapes: ['Monolith', 'Pillar', 'Pyramid', 'Arch', 'Steps'] },
+
+  /* The displaced starters land here and in Landmarks/Workshop below. A
+     carved stone acorn is a real finial, and a cut diamond is stonework, so
+     the theme survives the reshuffle. */
   { id: 'stonework', name: 'Stonework', free: true,
-    shapes: ['Arch', 'Steps', 'Gateway', 'Keep', 'Well'] },
+    shapes: ['Gateway', 'Keep', 'Well', 'Diamond', 'Acorn'] },
   { id: 'landmarks', name: 'Landmarks', free: false,
-    shapes: ['Lighthouse', 'Obelisk', 'Pyramid', 'Ziggurat', 'Clocktower'] },
+    shapes: ['Lighthouse', 'Obelisk', 'Ziggurat', 'Clocktower', 'Cross'] },
   { id: 'great-works', name: 'Great works', free: false,
     shapes: ['Bridge', 'Aqueduct', 'Windmill', 'Spire in stone', 'Anvil'] },
   { id: 'menagerie', name: 'Menagerie', free: false,
@@ -597,7 +622,7 @@ export const PACKS = [
   { id: 'relics', name: 'Relics', free: false,
     shapes: ['Sword', 'Crown', 'Key', 'Treasure chest', 'Lantern'] },
   { id: 'workshop', name: 'Workshop', free: false,
-    shapes: ['Vase', 'Bench', 'Anchor', 'Cross', 'Crescent moon'] },
+    shapes: ['Vase', 'Bench', 'Anchor', 'Crescent moon', 'Heart'] },
   { id: 'voyage', name: 'Voyage', free: false,
     shapes: ['Galleon', 'Locomotive', 'Rocketship', 'Hot air balloon', 'Submarine'] },
   { id: 'numerals', name: 'Numerals', free: false,
