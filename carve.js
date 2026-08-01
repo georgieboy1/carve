@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js?v=1785573271';
+import { LEVELS, PACKS, parse, key as cellKey, openingCuts } from './shapes.js?v=1785573271';
 import { buildBoard, analyse } from './solver.js?v=1785573271';
 import { SIGNALS, themeFor, finishOf, woodGrainCanvas } from './themes.js?v=1785573271';
 
@@ -611,6 +611,7 @@ function buildLevel() {
   state.errors = 0;
   state.hintsUsed = 0;
   state.unscored = isZen();   // a fresh attempt in Zen is unscored from the off
+
 }
 
 /* THE AUTHORING CONSTRAINT — the rule the player never has to think about.
@@ -984,6 +985,43 @@ function remapGrainUV(geometry, cell) {
     uv.setXY(i, across / GRAIN_SPAN.across, along / GRAIN_SPAN.along);
   }
   uv.needsUpdate = true;
+}
+
+/* THE ROUGH-OUT. A carver does not start on a perfect block, and neither
+   does the player: the first chips are already struck.
+
+   Not decoration. A sculpture that spans its box partitions the air around it
+   into regions no clue can reach across, and each needs its own way in — with
+   one opening cut the library needs 52 blind guesses, with these it needs 19.
+   Levels wanting more than one say so in OPENING_CUTS.
+
+   Runs AFTER buildVoxels because it removes real meshes. Setting `carved`
+   before they exist leaves the cube on screen and carved in state, which
+   reads as a cube you cannot tap.
+
+   Struck silently — no burst, no sound, no shake. The player did not do this,
+   and dressing it as their own first carve would take credit for a move they
+   never made. The clue label still goes in: the whole point is that it is
+   already telling them something. */
+function roughOut() {
+  for (const k of openingCuts(SHAPE)) {
+    const cell = state.byKey.get(k);
+    if (!cell || cell.keeper || cell.carved) continue;
+
+    cell.carved = true;
+    state.wasteLeft--;
+
+    const mesh = view.meshByKey.get(k);
+    if (mesh) {
+      view.group.remove(mesh);
+      view.meshes.splice(view.meshes.indexOf(mesh), 1);
+      view.meshByKey.delete(k);
+      mesh.geometry.dispose();
+    }
+    addLabel(cell);
+  }
+  refreshClues();
+  updateHUD();
 }
 
 function disposeVoxels() {
@@ -2626,6 +2664,8 @@ function loadLevel(index) {
   validateLevel();
   buildVoxels();
 
+  roughOut();
+
   state.hintsLeft = CONFIG.HINTS;
   resetMusicLayers();
   applyTheme(themeFor(LEVELS[levelIndex].pack));
@@ -4145,6 +4185,7 @@ buildLevel();
 validateLevel();
 initScene();
 buildVoxels();
+roughOut();
 initInput();
 initShards();
 initDust();

@@ -579,6 +579,50 @@ export function parse(shape) {
    rejects floating islands. Also catches ragged text maps, which is the
    most likely authoring slip by far. */
 
+/* THE ROUGH-OUT — how many chips are already struck when a level opens.
+
+   A carver does not start on a perfect block; the first cuts are made before
+   the shape is being found. Mechanically this is what breaks a deadlock: with
+   one opening cut the library needs 52 blind guesses, and with these it needs
+   19. Eleven levels want more than one, and they are the ones whose air is
+   partitioned by the sculpture — a shape that spans its box leaves regions
+   that no single clue can ever reach across, so each region needs its own way
+   in. Handing them one is far cheaper than redrawing the sculpture, which was
+   tried on Aqueduct: six redraws breaking its symmetry got 15 guesses to 9,
+   while one extra slice of stone got it to 3.
+
+   Levels absent from this table open with a single cut. */
+const OPENING_CUTS = {
+  'Gateway': 2,
+  'Diamond': 4,
+  'Aqueduct': 4,
+  'Flower': 2,
+  'Bench': 2,
+  'Anchor': 2,
+  'Crescent moon': 3,
+  'Two': 4,
+  'Three': 4,
+  'Five': 2,
+  'Letter R': 4,
+};
+
+/* Which cubes get struck. Lowest clue first, because a 0 says the most and
+   cascades on its own — and CRUCIALLY it is the same rule the fairness
+   measurement assumes, so the game and the validator cannot drift apart on
+   what a level opens with. */
+export function openingCuts(shape) {
+  const { cells, mass } = parse(shape);
+  const want = OPENING_CUTS[shape.name] || 1;
+  const waste = [...mass].filter((k) => !cells.has(k)).map((k) => {
+    const [x, y, z] = k.split(',').map(Number);
+    const near = OFFSETS.reduce((n, [dx, dy, dz]) =>
+      n + (cells.has(key(x + dx, y + dy, z + dz)) ? 1 : 0), 0);
+    return { k, near };
+  });
+  waste.sort((a, b) => a.near - b.near);
+  return waste.slice(0, want).map((c) => c.k);
+}
+
 export function validate(shape) {
   const { cells, mass, grid } = parse(shape);
   const problems = [];
