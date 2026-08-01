@@ -128,12 +128,33 @@ body {
 
 #left { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink); }
 
-#progress-track { height: 7px; border-radius: 99px; background: #efe2e9; overflow: hidden; }
+#progress-track {
+  height: 7px; border-radius: 99px; background: #efe2e9;
+  overflow: hidden; position: relative;
+}
+
+/* Ten divisions, drawn OVER the fill so they stay readable on both sides of
+   it. A level used to be 30 blocks and one carve moved the fill 11px on a
+   339px track, which you saw. It is 122 blocks now and one carve moves it
+   2.8px, which is nothing — the bar stopped reporting carves and started
+   reporting minutes. The marks give the creep something to cross: a landmark
+   roughly every twelve carves, so there is an event in the bar again even
+   though a single step is below the threshold of noticing. */
+#progress-track::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  border-radius: 99px;
+  background: repeating-linear-gradient(90deg,
+    transparent 0 calc(10% - 1.5px), rgba(255,255,255,.92) calc(10% - 1.5px) 10%);
+}
 
 #progress-fill {
   height: 100%; width: 100%; border-radius: 99px;
   background: linear-gradient(90deg, #9fd0c4, var(--mint));
-  transition: width .38s cubic-bezier(.34, 1.3, .64, 1);
+  /* Was .38s with an overshoot, tuned against an 11px step. An overshoot on
+     a 2.8px step is sub-pixel, and .38s is longer than the gap between taps
+     in a flurry, so the spring never landed — it just retargeted. Shorter
+     and plain: the fill now actually arrives between one carve and the next. */
+  transition: width .22s cubic-bezier(.4, 0, .2, 1);
 }
 
 #hint {

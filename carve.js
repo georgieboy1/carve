@@ -76,12 +76,26 @@ const CONFIG = {
   SHAKE_PIXELS: 2.5,
   SHAKE_HZ: 13,
 
+  /* ---- CHISEL RATE ----
+     See chiselStrike(). Half-life of the load in seconds, how much load it
+     takes to reach the floor, and how far anything is allowed to duck. */
+  CHISEL_RELAX: 0.34,
+  CHISEL_SPAN: 6,
+  CHISEL_FLOOR: 0.55,
+
   /* ---- THE REVEAL ----
      Three beats, and the gaps between them are the whole design. See
      beginReveal(). */
-  REVEAL_SETTLE: 0.45,  // s of nothing at all, while the last dust falls
+  /* The settle and the breath are longer than they were. Not because the
+     sequence was wrong — the 2.2s move is still the right length and is
+     untouched — but because the run-up quadrupled underneath it. Measured
+     on Monolith: 145s of carving into 3.25s of reveal, a ratio of 45:1
+     where the tuning was done at 18:1. The move is the payoff and stretching
+     it would only make it slower; what a long shift needs is a longer beat
+     of silence on either side of it. Both are still skippable. */
+  REVEAL_SETTLE: 0.8,   // s of nothing at all, while the last dust falls
   REVEAL_MOVE: 2.2,     // s of camera move
-  REVEAL_BREATH: 0.6,   // s the camera holds still BEFORE the choice appears
+  REVEAL_BREATH: 0.95,  // s the camera holds still BEFORE the choice appears
   REVEAL_TURN: 2.35,    // rad the move travels round the sculpture
   REVEAL_PHI: 1.02,     // where it settles: a little above the equator
   REVEAL_ARC: 0.2,      // it pulls back mid-move before pushing in
@@ -540,7 +554,7 @@ const dust = {
 const cuts = { free: [], live: [], geometry: null };
 
 /* Reused every frame while a shake is running. */
-const shake = { t: 0, mag: 0, phase: 0 };
+const shake = { t: 0, mag: 0, phase: 0, life: 0 };
 const shakeRight = new THREE.Vector3();
 const shakeUp = new THREE.Vector3();
 
@@ -769,7 +783,9 @@ function updateCamera() {
   const perPixel = 2 * view.spherical.radius
     * Math.tan((view.camera.fov * Math.PI) / 360) / height;
 
-  const k = shake.t / CONFIG.SHAKE_LIFE;                  // 1 -> 0
+  // Against the impulse's OWN life, not the constant: a damped impulse is
+  // shorter as well as smaller, and it should still peak where it starts.
+  const k = shake.t / (shake.life || CONFIG.SHAKE_LIFE);  // 1 -> 0
   const amp = CONFIG.SHAKE_PIXELS * perPixel * shake.mag * k * k;
   const w = shake.t * CONFIG.SHAKE_HZ * Math.PI * 2;
 
@@ -1141,7 +1157,15 @@ function initDust() {
   view.group.add(dust.points);
 }
 
-function puff(cell, origin) {
+/* `ease` thins the powder while the player is chiselling hard, and it is not
+   a taste decision — the pool holds exactly eight carves (72 motes) and a
+   mote lives about a second, so past eight carves a second the ring buffer
+   starts landing on motes that are still in the air and teleporting them to
+   a new cut. Measured during a burst the pool sat at 72 of 72, which is
+   every mote on screen at risk of popping. Emitting fewer per carve when the
+   player is working fast keeps the pool inside its own capacity, and the
+   screen ends up with about the same amount of powder either way. */
+function puff(cell, origin, ease = 1) {
   if (calm || !dust.points) return;
 
   const base = view.cubeMaterials[Math.min(cell.y, view.cubeMaterials.length - 1)];
@@ -1149,7 +1173,9 @@ function puff(cell, origin) {
   // against these backgrounds; this is the smallest step that still reads.
   const r = base.color.r * 0.74, g = base.color.g * 0.74, b = base.color.b * 0.74;
 
-  for (let n = 0; n < CONFIG.DUST; n++) {
+  const motes = Math.max(4, Math.round(CONFIG.DUST * ease));
+
+  for (let n = 0; n < motes; n++) {
     const i = dust.cursor;
     dust.cursor = (dust.cursor + 1) % dust.cap;
 
@@ -1318,10 +1344,23 @@ function stepCuts(dt) {
   }
 }
 
+/* The one place the impact escalates. The foley already does this and always
+   has — fragment size drives pitch, and every remaining piece is smaller as
+   the stone thins, so the strikes drift up across a level (measured on
+   Monolith: 381Hz over the first thirty carves, 500Hz over the last thirty).
+   At 30 carves that arc was too short to notice. At 122 it is a real slow
+   rise, and it was the only thing in the game that changed between the first
+   carve and the last.
+
+   So the light now travels with it: dimmer than before while you are still
+   opening the outer shell, brighter than before once the shape is showing.
+   Same integral, redistributed — the end of a long level earns more than the
+   start of one. Gated by `calm` like the rest of the impact. */
 function spark(origin) {
   if (calm || !view.spark) return;
   view.spark.position.copy(origin);
   view.spark.userData.life = CONFIG.SPARK_LIFE;
+  view.spark.userData.peak = CONFIG.SPARK_PEAK * (0.82 + 0.46 * musicProgress());
 }
 
 function stepSpark(dt) {
@@ -1330,7 +1369,41 @@ function stepSpark(dt) {
 
   light.userData.life = Math.max(0, light.userData.life - dt);
   const k = light.userData.life / CONFIG.SPARK_LIFE;
-  light.intensity = CONFIG.SPARK_PEAK * k * k;
+  light.intensity = (light.userData.peak || CONFIG.SPARK_PEAK) * k * k;
+}
+
+/* ---------- CHISEL RATE ----------
+   One number, 1 down to CHISEL_FLOOR, saying how hard the player is working
+   right now. Every per-carve effect scales by it, so a flurry softens as one
+   thing rather than four things each deciding separately.
+
+   It replaces the gap-since-last-strike that playCarve used to measure on
+   its own, and that measurement turned out to be the wrong instrument once
+   levels got long. A gap only ducks below 0.16s, which is 6.25 taps a
+   second; the floor needed 14.9. Across a full instrumented playthrough of
+   Monolith at 119 carves the duck fired on ZERO of them — the mix that was
+   documented as holding back during fast chiselling was in fact running at
+   full amplitude for every strike in the level. A single gap also flaps:
+   one pause in the middle of a run snapped everything back to full.
+
+   So this is a decayed count of recent strikes instead. Each strike adds
+   one; the load halves every CHISEL_RELAX seconds of quiet. A considered
+   single tap is 1.0 and unchanged. A five-tap burst at 200ms decrescendos
+   1.00, 0.89, 0.82, 0.77, 0.73 — one gesture, not five events. Sustained
+   hammering settles on the floor. A second of quiet is effectively a reset.
+
+   The floor is 0.55 rather than the 0.42 the sound used to name, because
+   0.42 was never reachable and so was never actually heard by anyone. */
+const chisel = { load: 0, at: 0, ease: 1 };
+
+function chiselStrike() {
+  const now = performance.now() / 1000;
+  const quiet = chisel.at ? now - chisel.at : 99;
+  chisel.at = now;
+
+  chisel.load = chisel.load * (0.5 ** (quiet / CONFIG.CHISEL_RELAX)) + 1;
+  chisel.ease = clamp(1 - (chisel.load - 1) / CONFIG.CHISEL_SPAN, CONFIG.CHISEL_FLOOR, 1);
+  return chisel.ease;
 }
 
 /* ---------- CAMERA SHAKE ----------
@@ -1345,10 +1418,30 @@ function stepSpark(dt) {
    would swing the far side of the sculpture much further than the near
    side, which is the thing that reads as a lurch. */
 
-function addShake(strength = 1) {
+/* `ease` is the chisel rate, and only the carve passes one. A run of taps
+   used to reset this to full life eight times a second, which turned a
+   0.16s impulse into a continuous 13Hz vibration for as long as the player
+   kept chiselling — measured over a full level the camera was shaking on
+   12% of every frame drawn, and inside a burst it never stopped at all.
+   Survivable at 30 carves. At 122 it is the most fatiguing thing on screen.
+
+   Two changes. The impulse is damped and SHORTENED by the rate, so a burst
+   leaves real gaps between rattles instead of renewing one faster than it
+   can die. And the loudest impulse wins rather than the newest, so a small
+   tap can no longer interrupt a big one — which is what kept an error
+   strike from being swallowed by the carve that follows it. Striking the
+   sculpture passes no ease and still lands at full size, because that one
+   has to be felt. */
+function addShake(strength = 1, ease = 1) {
   if (calm) return;
-  shake.t = CONFIG.SHAKE_LIFE;
-  shake.mag = strength;
+
+  const mag = strength * ease;
+  const k = shake.t / (shake.life || CONFIG.SHAKE_LIFE);
+  if (mag <= shake.mag * k * k) return;
+
+  shake.life = CONFIG.SHAKE_LIFE * ease;
+  shake.t = shake.life;
+  shake.mag = mag;
   shake.phase = Math.random() * Math.PI * 2;
 }
 
@@ -1394,6 +1487,13 @@ function clearEffects() {
   if (view.spark) { view.spark.userData.life = 0; view.spark.intensity = 0; }
   shake.t = 0;
   shake.mag = 0;
+  shake.life = 0;
+
+  // A new level starts from a rested hand, not from whatever rate the last
+  // one ended on — otherwise the first strike of a level arrives ducked.
+  chisel.load = 0;
+  chisel.at = 0;
+  chisel.ease = 1;
 }
 
 /* ---------- NUMBER CHIPS ---------- */
@@ -1666,15 +1766,26 @@ function carve(cellKey) {
        shake      two and a half pixels, so the tap lands in the hand
 
      cutFaces runs BEFORE the clue label goes in, so it lights the stone and
-     not the chip that is about to sit in the hole. */
+     not the chip that is about to sit in the hole.
+
+     All five now scale by ONE chisel rate, taken once here. Each of them
+     used to decide for itself how hard the player was working — the sound
+     from the gap since the last strike, the other four not at all — and at
+     122 carves a level that is four times as many chances for them to
+     disagree. The shards are deliberately left alone: they are the "that
+     block is gone" signal, and thinning them would remove information. */
+  const ease = chiselStrike();
+
   worldPosInto(cell, impact);
   burst(cell, impact);
-  puff(cell, impact);
+  puff(cell, impact, ease);
   cutFaces(cell);
   spark(impact);
-  addShake(1);
-  buzz(12);
-  playCarve(cell);
+  addShake(1, ease);
+  // Rounded, so a hard run of taps is a stutter of short pulses rather than
+  // a motor that never stops. Untested on a device: no phone here has one.
+  buzz(Math.round(12 * ease));
+  playCarve(cell, ease);
 
   syncMusicLayers();
 
@@ -2653,14 +2764,28 @@ const AUDIO = {
   FADE: 3,          // seconds, per the brief
   CUT: 0.015,       // a true instant cut is an audible click, not silence
   LOOP: 8,          // seconds; every generated part is built to divide this
-  THRESHOLDS: { rhythm: 0.33, melody: 0.66 },
+  /* Two stems entering is two events, and two events is all the mixer had.
+     At 30 carves that was a beat every 17 seconds. At 122 it is a beat every
+     50 seconds — measured on Monolith, rhythm at 44.7s and melody at 95.1s
+     of a 145s level. The spacing is still even; there is just far more level
+     between the beats, and moving the thresholds only decides WHICH gap is
+     the long one. Two events cannot pace two and a half minutes.
+
+     So the third beat is a stem LEAVING. At 88% carved the rhythm pulls
+     back and the drone and the melody are left holding the shape — taking a
+     layer out reads as strongly as putting one in, and it is the one beat
+     that could not be spent earlier because it is about the ending. It buys
+     a third event out of the three stems that already exist; a fourth stem
+     is the real answer and is not something to invent inside a review. */
+  THRESHOLDS: { rhythm: 0.33, melody: 0.66, hush: 0.82 },
+  HUSH: 0.3,        // where the rhythm sits once it has stepped back
   VOLUME: 0.5,
 };
 
 const audio = {
   ctx: null, master: null, layers: {},
   started: false, ready: false,
-  faded: { rhythm: false, melody: false },
+  faded: { rhythm: false, melody: false, hush: false },
 };
 
 /* The brief calls this layersCleared. Carve's equivalent is how much of the
@@ -2804,10 +2929,16 @@ function syncMusicLayers() {
     audio.faded.melody = true;
     fadeLayer('melody', 1, AUDIO.FADE);
   }
+  // The last stretch. Slower than the entrances, because a layer that steps
+  // back quickly reads as a mute rather than as a decision.
+  if (!audio.faded.hush && progress >= AUDIO.THRESHOLDS.hush) {
+    audio.faded.hush = true;
+    fadeLayer('rhythm', AUDIO.HUSH, AUDIO.FADE * 1.6);
+  }
 }
 
 function resetMusicLayers() {
-  audio.faded = { rhythm: false, melody: false };
+  audio.faded = { rhythm: false, melody: false, hush: false };
   if (!audio.ready) return;
   fadeLayer('base', 1, 0.4);
   fadeLayer('rhythm', 0, 0.25);
@@ -3101,7 +3232,7 @@ function screenPan(cell) {
            and the whole session like a broken xylophone.
    DUST    a lowpassed tail that outlives the body. This is the part that
            makes it read as stone rather than as a click. */
-function playCarve(cell) {
+function playCarve(cell, ease = chisel.ease) {
   const rig = liveRig();
   if (!rig) return;
 
@@ -3111,11 +3242,16 @@ function playCarve(cell) {
   const { ctx } = rig;
   const now = ctx.currentTime;
 
-  // How fast the player is chiselling. A flurry is a run of light taps, so
-  // it gets shorter and quieter — which is also what keeps twenty strikes in
-  // a second from summing into a wall.
-  const gap = rig.lastStrike < 0 ? 1 : now - rig.lastStrike;
-  const flurry = clamp(gap / 0.16, 0.42, 1);
+  /* The flurry duck, which used to be measured here from the gap since the
+     previous strike and is now the shared chisel rate. The gap version never
+     fired: it needed 6.25 taps a second to start ducking and 14.9 to reach
+     its floor, and over an instrumented 119-carve level it came out at 1.00
+     on every strike in the level. What was documented as restraint during
+     fast chiselling was a full-amplitude strike 119 times in a row.
+
+     It still both quietens AND shortens the strike, which is the part that
+     was right — it is what stops a run of taps summing into a wall. */
+  const flurry = ease;
   rig.lastStrike = now;
 
   const buried = buriedness(cell);
@@ -3960,7 +4096,7 @@ window.Carve = {
   toggleMode, starsFor, currentStars, ownsPack, canPlay, packOf,
   burst, shards, enterExamine, exitExamine, leaveExamine, applyAudit, zoomBy,
   applyTheme, themeState, rampColour, SIGNALS, applyFinish,
-  dust, puff, cuts, cutFaces, spark, shake, addShake,
+  dust, puff, cuts, cutFaces, spark, shake, addShake, chisel, chiselStrike,
   reveal, beginReveal, landReveal, frameReveal, reframeReveal,
   // The per-frame half of each effect, so the frame cost can be measured
   // rather than guessed at. Everything here is driven by renderFrame; call
