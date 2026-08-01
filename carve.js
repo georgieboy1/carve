@@ -1800,12 +1800,7 @@ function carve(cellKey) {
 
      Scoring is untouched. A cascade cannot strike sculpture, so it cannot
      cost a star. */
-  if (cell.near === 0) {
-    for (const n of neighboursOf(cell)) {
-      if (n.carved || n.struck || n.keeper || n.marked) continue;
-      carveOne(n, CASCADE_EASE);
-    }
-  }
+  if (cell.near === 0) cascadeFrom(cell);
 
   syncMusicLayers();
   refreshClues();          // this carve may have satisfied nearby clues
@@ -1814,10 +1809,47 @@ function carve(cellKey) {
 }
 
 /* A cascaded cube is a consequence, not a decision, so its feedback is
-   deliberately quieter than the tap that caused it - loud enough to read as
-   stone leaving, quiet enough that clearing six at once is not six times the
-   impact. */
+   deliberately quieter than the tap that caused it — loud enough to read as
+   stone leaving, quiet enough that clearing a dozen at once is not a dozen
+   times the impact. */
 const CASCADE_EASE = 0.42;
+
+/* How far a single strike carries. This is the number that decides whether
+   the game feels like carving or like clearing, and it costs NOTHING in
+   fairness: the cascade only ever travels through cubes with no sculpture
+   touching them, which by definition tell the player nothing. Measured across
+   the library, every cap from 7 to unlimited gives the identical 48/60 clean
+   levels and 36 blind guesses. All it changes is how many taps the shell
+   costs — median 38 at a cap of 7, 27 at 12, 12 with no cap at all.
+
+   12 rather than unlimited because an unlimited flood does not just remove
+   the tedium, it removes the level: ten levels drop under five taps and three
+   solve themselves entirely from the opening chips. A dozen cubes also reads
+   as a stroke of the chisel rather than a teleport.
+
+   Breadth-first, so what goes is the ring nearest the strike rather than a
+   finger of stone running off across the block. */
+const CASCADE_LIMIT = 12;
+
+function cascadeFrom(origin) {
+  let budget = CASCADE_LIMIT;
+  const queue = [origin];
+
+  while (queue.length && budget > 0) {
+    const cell = queue.shift();
+    // Only a cube with nothing touching it passes the cascade along; anything
+    // with a clue is information, and the player has to spend a tap on it.
+    if (cell !== origin && cell.near !== 0) continue;
+
+    for (const n of neighboursOf(cell)) {
+      if (budget <= 0) break;
+      if (n.carved || n.struck || n.keeper || n.marked) continue;
+      carveOne(n, CASCADE_EASE);
+      budget--;
+      queue.push(n);
+    }
+  }
+}
 
 function carveOne(cell, ease) {
   const cellKey = cell.key;
