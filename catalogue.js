@@ -11,9 +11,9 @@
    code, and the validator checks it stands before it ever reaches a player.
    ============================================================ */
 
-import { LEVELS, parse, validate } from './shapes.js?v=1785541867';
-import { thumbnail, layerMaterial } from './thumbs.js?v=1785541867';
-import { themeForShape } from './themes.js?v=1785541867';
+import { LEVELS, parse, validate } from './shapes.js?v=1785573271';
+import { thumbnail, layerMaterial } from './thumbs.js?v=1785573271';
+import { themeForShape } from './themes.js?v=1785573271';
 
 const grid = document.getElementById('grid');
 

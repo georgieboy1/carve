@@ -17,8 +17,9 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js?v=1785541867';
-import { SIGNALS, themeFor, finishOf, woodGrainCanvas } from './themes.js?v=1785541867';
+import { LEVELS, PACKS, parse, key as cellKey } from './shapes.js?v=1785573271';
+import { buildBoard, analyse } from './solver.js?v=1785573271';
+import { SIGNALS, themeFor, finishOf, woodGrainCanvas } from './themes.js?v=1785573271';
 
 /* ---------- MOTION PREFERENCE ----------
    Read once into a plain boolean rather than calling matches() in the frame
@@ -1744,6 +1745,44 @@ function carve(cellKey) {
     return;
   }
 
+  carveOne(cell, chiselStrike());
+
+  /* THE CASCADE. A cube with no sculpture touching it says "nothing here",
+     and Minesweeper has always answered that by opening the whole region for
+     one click. Carve did not, and that omission is what made the density fix
+     feel like work: padding a block adds thousands of cubes that read 0, and
+     without a cascade the player clears every one of them by hand. Measured
+     on the padded library, 53% of taps landed on stone no sculpture touches.
+
+     Depth is capped at one ring rather than flooding the region. A full
+     flood collapses Monolith - the first level - to a single tap, which
+     removes the level rather than the tedium. One ring takes the median from
+     122 taps to about 72 and removes no decisions at all: every cube it
+     clears was already proven safe by the clue the player just uncovered.
+
+     Scoring is untouched. A cascade cannot strike sculpture, so it cannot
+     cost a star. */
+  if (cell.near === 0) {
+    for (const n of neighboursOf(cell)) {
+      if (n.carved || n.struck || n.keeper || n.marked) continue;
+      carveOne(n, CASCADE_EASE);
+    }
+  }
+
+  syncMusicLayers();
+  refreshClues();          // this carve may have satisfied nearby clues
+  updateHUD();
+  if (state.wasteLeft === 0) finish('won');
+}
+
+/* A cascaded cube is a consequence, not a decision, so its feedback is
+   deliberately quieter than the tap that caused it - loud enough to read as
+   stone leaving, quiet enough that clearing six at once is not six times the
+   impact. */
+const CASCADE_EASE = 0.42;
+
+function carveOne(cell, ease) {
+  const cellKey = cell.key;
   cell.carved = true;
   state.wasteLeft--;
 
@@ -1774,8 +1813,6 @@ function carve(cellKey) {
      122 carves a level that is four times as many chances for them to
      disagree. The shards are deliberately left alone: they are the "that
      block is gone" signal, and thinning them would remove information. */
-  const ease = chiselStrike();
-
   worldPosInto(cell, impact);
   burst(cell, impact);
   puff(cell, impact, ease);
@@ -1787,12 +1824,7 @@ function carve(cellKey) {
   buzz(Math.round(12 * ease));
   playCarve(cell, ease);
 
-  syncMusicLayers();
-
   addLabel(cell);
-  refreshClues();          // this carve may have satisfied nearby clues
-  updateHUD();
-  if (state.wasteLeft === 0) finish('won');
 }
 
 function toggleMark(cellKey) {
@@ -2316,7 +2348,56 @@ function findHint() {
        corrected: the proof comes back as a 'carve' above, not a 'keep' here. */
     if (!fallback && !cell.marked) fallback = hint;
   }
-  return fallback;
+  if (fallback) return fallback;
+
+  /* The cheap rules have run out. Rather than tell the player to guess, ask
+     whether the cube is decided in EVERY board consistent with what they can
+     see — which is the real question, and the one the three rules above only
+     approximate.
+
+     This matters more than it sounds. Measured across the library, the local
+     rules stall on levels that are fully determined: they report about twice
+     as many forced guesses as actually exist. Levels were nearly redrawn on
+     the strength of that over-count. Star, Cross and Four were all on a list
+     of "unfixable" levels and all three are decided.
+
+     Runs second because it is the expensive one, and on these boards it earns
+     its cost only when the cheap rules have genuinely finished. */
+  const board = solverBoard();
+  const st = new Uint8Array(board.list.length);
+  let keepersKnown = 0;
+  for (const cell of state.cells) {
+    const i = solverIndex.get(cell.key);
+    if (i === undefined) continue;
+    if (cell.carved) st[i] = 1;
+    else if (cell.struck) { st[i] = 2; keepersKnown++; }
+  }
+
+  const exact = analyse(board, st, (state.cells.length - state.wasteTotal) - keepersKnown);
+  if (!exact || !exact.ok) return null;
+
+  const take = (index, kind) => {
+    const cell = state.byKey.get(board.list[index].k);
+    if (!cell || cell.carved || cell.struck) return null;
+    if (kind === 'keep' && cell.marked) return null;
+    return { kind, cell, from: neighboursOf(cell).find((n) => n.carved) || null };
+  };
+  for (const i of exact.forcedWaste || []) { const h = take(i, 'carve'); if (h) return h; }
+  for (const i of exact.forcedKeeper || []) { const h = take(i, 'keep'); if (h) return h; }
+  return null;
+}
+
+/* Built once per level and reused. Rebuilding the board on every hint press
+   would be the expensive part, not the reasoning. */
+let solverCache = null;
+let solverIndex = new Map();
+
+function solverBoard() {
+  if (solverCache && solverCache.shape === SHAPE) return solverCache.board;
+  const board = buildBoard(parse(SHAPE));
+  solverIndex = new Map(board.list.map((c, i) => [c.k, i]));
+  solverCache = { shape: SHAPE, board };
+  return board;
 }
 
 function useHint() {

@@ -17,7 +17,7 @@
 
    Caught exactly that way after the wood finish added themes.finishOf.
    Bumping VERSION drops the whole shell cache, so the set stays consistent. */
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL_CACHE = `carve-shell-${VERSION}`;
 const RUNTIME_CACHE = `carve-runtime-${VERSION}`;
 
@@ -30,6 +30,7 @@ const SHELL = [
   './carve.css',
   './carve.js',
   './shapes.js',
+  './solver.js',
   './themes.js',
   './thumbs.js',
   './gallery.html',
